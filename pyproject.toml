@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parityrun"
+version = "0.1.0"
+description = "Golden-recording parity tests for HTTP services: responses, LLM prompts, outside calls, database rows and files"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Arttu Jantunen" }]
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.28",
+  "PyYAML>=6.0",
+  "pillow>=11.0",
+  "numpy>=2.0",
+  "scipy>=1.13",
+]
+keywords = ["testing", "golden", "snapshot", "conformance", "parity", "rewrite", "llm"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+  "Intended Audience :: Developers",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+parityrun = "parityrun.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/arttujan/parityrun"
+
+[tool.setuptools.packages.find]
+where = ["src"]

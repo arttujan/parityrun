@@ -1,0 +1,5 @@
+{
+  "python": {
+    "cmd": ["{python}", "notes_service.py", "--port", "{port}"]
+  }
+}

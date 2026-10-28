@@ -1,0 +1,10 @@
+description: Add a note (the LLM titles it), list the notes, and a refused empty note.
+steps:
+  - call: POST /notes
+    id: made
+    body: {text: "Buy oat milk and call the plumber before Friday"}
+    llm: ["Errands before Friday"]
+  - call: GET /notes
+  - call: POST /notes
+    body: {text: "   "}
+  - call: GET /missing
