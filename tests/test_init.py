@@ -7,7 +7,7 @@ import textwrap
 import httpx
 import pytest
 
-from parityrun import Project, cli, load, runner
+from parityrun import Project, RunInfo, cli, load, runner
 from parityrun import init as setup
 
 
@@ -112,6 +112,9 @@ def test_init_writes_a_project_that_loads(tmp_path, monkeypatch, capsys):
     project = load(folder / "parityrun_project.py")
     assert (project.reference, project.repo, project.ready, project.quick) == ("php", app.resolve(), "/", ["smoke"])
     assert project.isolate and project.html and project.redirects and project.databases == ["data/app.sqlite"]
+    assert project.coverage  # a PHP app's lines are measured
+    run = RunInfo(data_dir=tmp_path, work=tmp_path, port=4321, stub_url="http://127.0.0.1:1", repo=app)
+    assert project.env(run) == {"PORT": "4321"}  # any implementation added later gets its port too
     assert runner.load(project, "smoke")["steps"] == [{"call": "GET /", "follow": True}]
     assert (folder / ".gitignore").read_text(encoding="utf-8") == "out/\n"
     assert setup.init(app, check_start=False) == 1  # never over what is there without --force

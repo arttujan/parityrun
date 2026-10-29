@@ -277,9 +277,10 @@ def smoke(found: dict) -> dict:
 
 def project_file(stack: Stack, ready: str) -> str:
     q = lambda value: json.dumps(value, ensure_ascii=False)  # noqa: E731 - a JSON string or list is Python too
+    values = {"PORT": "{port}", **stack.env}  # every implementation, the ports added later too, gets its port
     env = ", ".join(f"{q(k)}: " + ("str(run.port)" if v == "{port}" else
                                    f"{q(v)}.replace(\"{{port}}\", str(run.port))" if "{port}" in v else q(v))
-                    for k, v in stack.env.items())
+                    for k, v in values.items())
     notes = "".join(f"# {'-' if i == 0 else ' '} {line}\n" for note in stack.notes
                     for i, line in enumerate(_wrap(note)))
     settings = [f"    reference={q(stack.name)},", '    quick=["smoke"],', "    env=env,", f"    ready={q(ready)},",
