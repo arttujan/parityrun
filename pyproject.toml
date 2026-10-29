@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parityrun"
-version = "0.1.0"
-description = "Golden-recording parity tests for HTTP services: responses, LLM prompts, outside calls, database rows and files"
+version = "0.2.0"
+description = "Golden-recording parity tests for HTTP services and web sites: responses, LLM prompts, outside calls, database rows and files"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

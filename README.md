@@ -24,7 +24,7 @@ keeps checking that service on every change since.
 ## Install
 
 ```
-pip install git+https://github.com/arttujan/parityrun@v0.1.0
+pip install git+https://github.com/arttujan/parityrun@v0.2.0
 ```
 
 Python 3.10+. Videos need `ffmpeg` and `ffprobe` on PATH (or the `FFMPEG` / `FFPROBE` variables).
