@@ -20,7 +20,7 @@ from html.parser import HTMLParser
 import httpx
 import yaml
 
-from . import runner
+from . import routes, runner
 from .project import Project, RunInfo
 from .stubs import Stub
 
@@ -334,7 +334,13 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> in
     (folder / "scenarios" / "smoke.yaml").write_text(
         yaml.safe_dump(smoke(found), sort_keys=False, allow_unicode=True, width=1000), encoding="utf-8")
     (folder / ".gitignore").write_text("out/\n", encoding="utf-8")
-    print(f"Wrote {folder.relative_to(app.parent)}/: impls.json, parityrun_project.py, scenarios/smoke.yaml")
+    found_routes, route_notes = routes.scan(app, use_framework=check_start)
+    stack.notes += route_notes
+    (folder / "golden").mkdir(exist_ok=True)
+    (folder / "golden" / "endpoints.json").write_text(json.dumps([r.key for r in found_routes], indent=1) + "\n",
+                                                      encoding="utf-8")
+    print(f"Wrote {folder.relative_to(app.parent)}/: impls.json, parityrun_project.py, scenarios/smoke.yaml, "
+          f"golden/endpoints.json ({len(found_routes)} routes found in the code)")
     for note in stack.notes:
         print(f"  note: {note}")
     if "error" in found:
@@ -345,6 +351,8 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> in
         tokens = f", form tokens captured: {', '.join(found['tokens'])}" if found.get("tokens") else ""
         print(f"The app runs: home page {found['status']}, {pages} linked page{'s' * (pages != 1)} in the smoke "
               f"scenario{tokens}.")
-    print("\nNext:\n  parityrun record        record what the app does now\n"
+    print("\nNext:\n  parityrun capture       use the app in your browser: every route you visit is ticked off and\n"
+          "                          what you do becomes a scenario\n"
+          "  parityrun record        record what the app does now\n"
           "  git add parityrun       keep the settings and recordings with the code")
     return 0

@@ -7,6 +7,8 @@ them, and list the endpoints the scenarios don't use yet.
                                                                    compare an implementation with the recordings
   parityrun [--project FILE] coverage                              which endpoints (golden/endpoints.json) are used
   parityrun init [PATH] [--force] [--no-start]                     set parityrun up in an existing app's folder
+  parityrun [--project FILE] routes                                read the app's routes from its code
+  parityrun [--project FILE] capture [NAME] [--port 8000]          use the app in a browser; it becomes a scenario
 
 FILE (default parityrun_project.py, else parityrun/parityrun_project.py) defines PROJECT = parityrun.Project(...).
 """
@@ -150,6 +152,12 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     first.add_argument("path", nargs="?", default=".", help="the app's folder (default: here)")
     first.add_argument("--force", action="store_true", help="write parityrun/ again even if it exists")
     first.add_argument("--no-start", action="store_true", help="don't start the app to look at it")
+    sub.add_parser("routes", help="read the app's routes from its code into golden/endpoints.json")
+    cap = sub.add_parser("capture", help="use the app in your browser: what you do becomes a scenario")
+    cap.add_argument("name", nargs="?", help="the scenario's name (default: visit, visit-2, ...)")
+    cap.add_argument("--port", type=int, default=8000, help="where the browser opens the app (default: 8000)")
+    cap.add_argument("--impl", help="the implementation in impls.json (default: the reference)")
+    cap.add_argument("--no-browser", action="store_true", help="don't open the browser")
     args = parser.parse_args(argv)
     if args.cmd == "init":
         from .init import init
@@ -165,7 +173,34 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
         chosen = project.quick if args.quick else [n for n in everything if n not in project.quick] \
             if args.slow else everything
         return check(project, args.impl or project.reference, args.scenarios or chosen)
+    if args.cmd == "routes":
+        return list_routes(project)
+    if args.cmd == "capture":
+        from .capture import capture
+        return capture(project, args.name, args.impl, args.port, open_browser=not args.no_browser)
     return coverage(project)
+
+
+def list_routes(project: Project) -> int:
+    """Read the reference's routes from its code, save them as golden/endpoints.json, show which are visited."""
+    from . import routes
+    from .capture import _covered, write_endpoints
+
+    impl = runner.Implementation(project, project.reference)
+    found, notes = routes.scan(impl.folder)
+    for note in notes:
+        print(f"note: {note}")
+    if not found:
+        print(f"No routes found in {impl.folder}: list them in golden/endpoints.json yourself (\"GET /path\").")
+        return 1
+    path = write_endpoints(project, found)
+    done = _covered(project, [r.key for r in found])
+    width = max(len(r.key) for r in found)
+    for r in found:
+        print(f"  {'x' if r.key in done else ' '} {r.key.ljust(width)}   {r.source}")
+    print(f"\n{len(found)} routes, {len(done)} visited by the scenarios. Saved {path.relative_to(project.root.parent)}."
+          f"\nVisit the rest with: parityrun capture")
+    return 0
 
 
 if __name__ == "__main__":

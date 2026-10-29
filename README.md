@@ -34,16 +34,26 @@ Python 3.10+. Videos need `ffmpeg` and `ffprobe` on PATH (or the `FFMPEG` / `FFP
 In your app's folder (PHP, Laravel, Symfony, WordPress, Node.js, Django, Flask, FastAPI or Rust):
 
 ```
-parityrun init        # finds how to start the app, starts it once, writes parityrun/
+parityrun init        # finds how to start the app and every route in its code, writes parityrun/
+parityrun capture     # opens the app in your browser: use it, every route you visit is ticked off
 parityrun record      # records what the app does now into parityrun/golden/
 ```
 
-`init` starts the app in a throwaway copy, reads its home page and writes `parityrun/`: how to start the app
-(`impls.json`), the settings (`parityrun_project.py`, with notes on anything it couldn't decide, such as a MySQL
-database) and a first scenario (`scenarios/smoke.yaml`: the home page and the pages it links to, form tokens
-captured). Every run uses a fresh copy of the app's folder, so the app's own files are never changed and whatever it
-writes there is recorded. Add what people do on the site as scenario steps (see Scenarios), then check another
-version against the recordings with `parityrun check --impl NAME`.
+`init` starts the app in a throwaway copy, reads its home page and its code, and writes `parityrun/`: how to start
+the app (`impls.json`), the settings (`parityrun_project.py`, with notes on anything it couldn't decide, such as a
+MySQL database), the routes found in the code (`golden/endpoints.json`) and a first scenario (`scenarios/smoke.yaml`:
+the home page and the pages it links to). Every run uses a fresh copy of the app's folder, so the app's own files
+are never changed and whatever it writes there is recorded.
+
+`capture` starts the app behind a proxy at http://127.0.0.1:8000. Use the site as people do: open the pages, send the
+forms. Each page shows how many of the app's routes have been visited, and http://127.0.0.1:8000/__parityrun lists
+the ones still to go. Press Finish there: what you did becomes `scenarios/visit.yaml` (form tokens and new ids are
+captured so it replays on a fresh app), and it is recorded twice to prove it replays. Run `capture` again until every
+route is visited. `parityrun routes` shows the list in the terminal. Then check another version against the
+recordings with `parityrun check --impl NAME`.
+
+Routes are read from Laravel (`artisan route:list`), Symfony (`debug:router`), Slim, plain PHP pages and hand-made
+PHP routers, Express-style JavaScript and TypeScript routers, Flask, FastAPI, Django, axum and actix.
 
 ## Try it
 
@@ -197,6 +207,9 @@ parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
 parityrun coverage                         the endpoints in golden/endpoints.json no scenario calls
 parityrun init [PATH] [--force] [--no-start]
                                            set parityrun up in an existing app's folder (writes parityrun/)
+parityrun routes                           read the reference's routes from its code into golden/endpoints.json
+parityrun capture [NAME] [--port 8000] [--impl NAME] [--no-browser]
+                                           use the app in a browser; what you do becomes scenarios/NAME.yaml
 ```
 
 `check` exits 0 only when every comparison passes. Review the diff of `golden/` before committing a new recording:

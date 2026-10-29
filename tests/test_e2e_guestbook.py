@@ -11,9 +11,12 @@ import re
 import shutil
 import subprocess
 
+import httpx
 import pytest
+import yaml
 
 from parityrun import cli, load
+from parityrun.capture import Session
 
 GUESTBOOK = pathlib.Path(__file__).resolve().parents[1] / "examples" / "guestbook"
 PORTS = ["js", "ts", "rust"]
@@ -32,10 +35,11 @@ def _needs(impl: str) -> None:
         subprocess.run(["cargo", "build", "--release", "--quiet"], cwd=GUESTBOOK / "rust", check=True, timeout=600)
 
 
-def _project(folder: pathlib.Path, reference: str, impls: dict | None = None):
+def _project(folder: pathlib.Path, reference: str, impls: dict | None = None, scenarios: bool = True):
     """The example's settings and scenarios in `folder` (goldens and reports go there); the code runs in place."""
     root = folder / "guestbook"
-    shutil.copytree(GUESTBOOK, root, ignore=shutil.ignore_patterns("golden", "out", "php", "js", "ts", "rust"))
+    skip = ["golden", "out", "php", "js", "ts", "rust"] + ([] if scenarios else ["scenarios"])
+    shutil.copytree(GUESTBOOK, root, ignore=shutil.ignore_patterns(*skip))
     if impls:
         spec = json.loads((root / "impls.json").read_text(encoding="utf-8"))
         (root / "impls.json").write_text(json.dumps({**spec, **impls}), encoding="utf-8")
@@ -127,6 +131,36 @@ def test_the_javascript_port_records_like_the_site(js_site):
 def test_the_other_ports_match_the_javascript_port(js_site, port):
     _needs(port)
     assert _failures(js_site, port) == {}
+
+
+@pytest.mark.parametrize(("reference", "ports"), [("php", ["js", "ts", "rust"]), ("js", ["ts", "rust"])])
+def test_browsing_the_site_through_capture_becomes_a_scenario_every_port_passes(tmp_path, reference, ports):
+    """Routes read from the code, ticked off while a browser uses the site; the session replays on each port."""
+    _needs(reference)
+    project = _project(tmp_path, reference, scenarios=False)
+    session = Session(project, port=0)
+    assert session.keys == ["GET /", "GET /entries/{param}", "POST /entries/{param}/delete", "GET /health",
+                            "POST /sign"]  # read from the reference's code
+    session.start()
+    try:
+        browser = httpx.Client(base_url=session.url, follow_redirects=True)
+        token = re.search(r'name="csrf" value="([0-9a-f]+)"', browser.get("/").text).group(1)
+        entry = browser.post("/sign", data={"csrf": token, "name": "Ann", "message": "Hello\nthere"})
+        assert entry.status_code == 200 and "Ann" in entry.text
+        browser.get("/")
+        assert "0 entries" in browser.post(f"{entry.url.path}/delete", data={"csrf": token}).text
+        assert browser.get("/nowhere").status_code == 404
+        assert "4 of 5 routes visited; 1 to go" in browser.get("/__parityrun").text
+    finally:
+        session.stop()
+    steps = yaml.safe_load(session.save("browse").read_text(encoding="utf-8"))["steps"]
+    assert [s["call"] for s in steps] == ["GET /", "POST /sign", "GET /entries/{{entry}}", "GET /",
+                                          "POST /entries/{{entry}}/delete", "GET /", "GET /nowhere"]
+    assert steps[1]["form"] == {"csrf": "{{csrf}}", "name": "Ann", "message": "Hello\nthere"}
+    assert cli.main(["record", "browse"], project=project) == 0
+    for port in ports:
+        _needs(port)
+        assert cli.main(["check", "--impl", port, "browse"], project=project) == 0, port
 
 
 def test_a_port_that_trims_like_javascript_fails_where_php_differs(js_site, tmp_path):

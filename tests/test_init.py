@@ -128,7 +128,7 @@ def test_the_project_init_wrote_is_found_from_the_apps_folder(tmp_path, monkeypa
     monkeypatch.setattr(setup.shutil, "which", lambda tool: f"/usr/bin/{tool}")
     app = _files(tmp_path / "site", {"index.php": ""})
     setup.init(app, check_start=False)
-    (app / "parityrun" / "golden").mkdir()
+    assert json.loads((app / "parityrun" / "golden" / "endpoints.json").read_text(encoding="utf-8")) == ["GET /"]
     (app / "parityrun" / "golden" / "endpoints.json").write_text('["GET /", "GET /about"]', encoding="utf-8")
     monkeypatch.chdir(app)
     assert cli.main(["coverage"]) == 0
