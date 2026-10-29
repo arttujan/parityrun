@@ -47,6 +47,16 @@ class Project:
     """The server-sent events path a step with `sse: n` listens to."""
     databases: list[str] = dataclasses.field(default_factory=list)
     """SQLite files in the data folder; the first is recorded (schema and rows) as `db`."""
+    snapshot: Callable[[RunInfo], dict] | None = None
+    """Any other database, read after the run: {"schema": ..., "rows": {table: [row, ...]}}, recorded as `db`
+    instead of the SQLite file (parityrun.snapshot.dbapi reads MySQL, PostgreSQL or SQLite connections)."""
+    setup: Callable[[RunInfo], None] | None = None
+    """Called before each start, e.g. to empty an outside database so every run begins from the same state."""
+    html: bool = False
+    """Record HTML responses as normalised lines (`html`) instead of their exact text: attribute order, entity
+    spelling, indentation and comments don't count (parityrun.htmlnorm)."""
+    redirects: bool = False
+    """Record the Location of every 3xx answer (`location`), normalised like everything else."""
     random_files: set[str] = dataclasses.field(default_factory=set)
     """File names that are random by design: only their size is compared."""
     interleaved_files: set[str] = dataclasses.field(default_factory=set)

@@ -23,6 +23,10 @@ class Normalizer:
         self.dates = {today.isoformat(): "<date>", today.strftime("%Y-%m"): "<month>",
                       (today - dt.timedelta(days=1)).isoformat(): "<date>"}
 
+    def add(self, literals: dict[str, str]) -> None:
+        """More values of this run only (e.g. a captured CSRF token) to replace by their labels."""
+        self.literals = sorted([*self.literals, *literals.items()], key=lambda kv: -len(kv[0]))
+
     def collect(self, value) -> None:
         if isinstance(value, dict):
             for key in sorted(value):

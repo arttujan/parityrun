@@ -6,6 +6,7 @@ is judged the same way. A run gives a recording: every response, every LLM and o
 and the files.
 """
 
+import html
 import json
 import os
 import pathlib
@@ -22,7 +23,7 @@ import time
 import httpx
 import yaml
 
-from . import snapshot
+from . import htmlnorm, snapshot
 from .normalize import Normalizer
 from .project import Project, RunInfo
 from .stubs import Stub
@@ -53,7 +54,10 @@ class Implementation:
         stub = f"http://127.0.0.1:{stub_port}"
         self.port = port
         info = RunInfo(data_dir=data_dir, work=data_dir.parent, port=port, stub_url=stub, repo=repo)
-        env = {**os.environ, "PARITYRUN_STUB": stub, **(project.env(info) if project.env else {}),
+        self.info = info
+        if project.setup:  # e.g. an outside database emptied, so every run starts the same
+            project.setup(info)
+        env ={**os.environ, "PARITYRUN_STUB": stub, **(project.env(info) if project.env else {}),
                **{k: str(v).replace("{stub}", stub).replace("{python}", sys.executable).replace("{repo}", str(repo))
                   .replace("{data}", data_dir.as_posix()) for k, v in (extra or {}).items()}}
         self.env = env
@@ -160,16 +164,46 @@ def _blank(data, parts: list[str]) -> None:
             pass
 
 
+def _form_value(value):
+    """A form field as a browser sends it: a ticked checkbox (YAML's on/yes/true) is "on", an empty one isn't sent."""
+    if isinstance(value, list):
+        return [_form_value(v) for v in value]
+    if value is True:
+        return "on"
+    return "" if value is None else str(value)
+
+
 def _request(client: httpx.Client, step: dict, ctx: dict, fixtures: pathlib.Path) -> httpx.Response:
     method, path = step["call"].split(" ", 1)
     path = render(path, ctx)
+    follow = bool(step.get("follow"))  # a browser following redirects to the page they end on
     if "raw" in step:  # a file sent as the body, e.g. an upload
         return client.request(method, path, content=(fixtures / step["raw"]).read_bytes(),
-                              headers={"Content-Type": "application/octet-stream"})
-    body = render(step.get("body"), ctx)
+                              headers={"Content-Type": "application/octet-stream"}, follow_redirects=follow)
     headers = step.get("headers") or {}  # e.g. Range: a player seeking in a video
-    return client.request(method, path, json=body, headers=headers) if body is not None \
-        else client.request(method, path, headers=headers)
+    if "form" in step or "upload" in step:  # a web form: urlencoded, or multipart with files from fixtures
+        form = {k: _form_value(v) for k, v in (render(step.get("form"), ctx) or {}).items() if v is not False}
+        files = {field: (pathlib.Path(name).name, (fixtures / name).read_bytes())
+                 for field, name in (step.get("upload") or {}).items()}
+        return client.request(method, path, data=form, files=files or None, headers=headers,
+                              follow_redirects=follow)
+    body = render(step.get("body"), ctx)
+    return client.request(method, path, json=body, headers=headers, follow_redirects=follow) if body is not None \
+        else client.request(method, path, headers=headers, follow_redirects=follow)
+
+
+def _capture(r: httpx.Response, captures: dict, kind: str, where: str) -> dict:
+    """Values for later steps' templates: a regex's first group (or whole match) in the body, or in a header."""
+    found = {}
+    for name, rule in captures.items():
+        rule = rule if isinstance(rule, dict) else {"regex": rule}
+        text = r.headers.get(rule["header"], "") if "header" in rule else r.text
+        match = re.search(rule["regex"], text)
+        if not match:
+            raise RuntimeError(f"{where}: capture {name} found nothing for {rule['regex']!r} in {text[:500]!r}")
+        value = match.group(1) if match.groups() else match.group(0)
+        found[name] = html.unescape(value) if kind == "text/html" and "header" not in rule else value
+    return found
 
 
 def _listen(url: str, headers: dict, count: int, found: list, ready: threading.Event) -> None:
@@ -239,7 +273,7 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
         exe = _fake_claude(work / "bin")
         env = {k: str(v).replace("{fake_claude}", exe) for k, v in env.items()}
     proc, base = impl.start(data_dir, stub.port, work / "service.log", env)
-    steps, ctx = [], {"stub": stub.url}
+    steps, ctx, captured = [], {"stub": stub.url}, {}
     try:
         client = httpx.Client(base_url=base, headers=project.headers, timeout=180)
         for k, step in enumerate(scenario["steps"]):
@@ -276,7 +310,15 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
             if step.get("sse"):
                 listener.join(15)
             kind = r.headers.get("content-type", "").split(";")[0]
+            if step.get("capture"):  # e.g. a CSRF token in a form: random, so recorded as <name>
+                found = _capture(r, step["capture"], kind, f"{name} step {k} ({step['call']})")
+                ctx.update(found)
+                captured.update({value: f"<{key}>" for key, value in found.items() if len(value) >= 8})
             entry = {"call": step["call"], "status": r.status_code}
+            if project.redirects and 300 <= r.status_code < 400 and "location" in r.headers:
+                entry["location"] = r.headers["location"]
+            if step.get("follow"):  # the redirects on the way to the page the step ends on
+                entry["redirects"] = [[h.status_code, h.headers.get("location", "")] for h in r.history]
             if events:
                 entry["events"] = events
             if kind == "application/json":
@@ -294,6 +336,8 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
                 clip.write_bytes(r.content)
                 entry["video"], frames = snapshot.video(clip, out / f"response-{k}")
                 entry["frames"] = [f.name for f in frames]
+            elif project.html and kind == "text/html":  # as a browser reads it, one line per tag or text
+                entry["html"] = htmlnorm.lines(r.text)
             else:
                 entry["text"] = r.text
             if r.headers.get("content-disposition"):
@@ -317,8 +361,11 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
             proc.kill()
             proc.wait()
         stub.close()
-    db_file = data_dir / project.databases[0] if project.databases else None
-    db = snapshot.database(db_file) if db_file and db_file.exists() else {}
+    if project.snapshot:  # an outside database (MySQL, PostgreSQL, ...) read by the project
+        db = project.snapshot(impl.info)
+    else:
+        db_file = data_dir / project.databases[0] if project.databases else None
+        db = snapshot.database(db_file) if db_file and db_file.exists() else {}
     skip = {f"{n}{s}" for n in project.databases for s in ("", "-wal", "-shm", "-journal")}
     kinds = {"skip": skip, "random": project.random_files, "interleaved": project.interleaved_files}
     files, images = snapshot.files(data_dir, **kinds)
@@ -334,6 +381,7 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
                        f"127.0.0.1:{port}": labels["service"], f"localhost:{port}": labels["service"]})
     raw = {"steps": steps, "db": db, "files": files}
     norm.collect(raw)
+    norm.add({value: label for value, label in captured.items() if value not in norm.ids})  # ids keep their numbers
     recording = measured(norm.apply(raw), project.measured_keys, project.measured_companions)
     if project.post_process:
         project.post_process(recording)
@@ -415,7 +463,8 @@ def checks(golden: dict, got: dict, golden_dir: pathlib.Path, got_dir: pathlib.P
             score = snapshot.ssim(golden_dir / name, got_dir / name) if name in have.get("frames", []) else 0.0
             out.append({"name": f"step {k} {want['call']} {name}", "ok": score >= threshold,
                         "detail": [f"SSIM {score:.4f} (needs {threshold})"]})
-        for part in ("status", "json", "text", "disposition", "events", "video", "range", "cli"):
+        for part in ("status", "location", "redirects", "json", "text", "html", "disposition", "events", "video",
+                     "range", "cli"):
             if part in want or part in have:
                 out.append({"name": f"step {k} {want['call']} {part}", "ok": want.get(part) == have.get(part),
                             "detail": differences(want.get(part), have.get(part))})

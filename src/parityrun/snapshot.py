@@ -34,7 +34,72 @@ def _maybe_json(value):
 def database(path: pathlib.Path) -> dict:
     """A SQLite database's schema (columns, types, defaults, keys, index SQL) and every table's rows."""
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
+    try:
+        return _sqlite(conn)
+    finally:
+        conn.close()
+
+
+def _plain(value):
+    """A database value as JSON: decimals and times as text, bytes by their hash."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _maybe_json(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"sha256": hashlib.sha256(bytes(value)).hexdigest()}
+    if hasattr(value, "isoformat"):  # datetime, date, time
+        return value.isoformat()
+    if isinstance(value, (list, tuple)):  # PostgreSQL arrays
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):  # PostgreSQL json columns
+        return value
+    return str(value)  # Decimal, UUID, ...
+
+
+QUERIES = {
+    "mysql": ("SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() "
+              "AND table_type = 'BASE TABLE' ORDER BY table_name",
+              "SELECT column_name, column_type, is_nullable, column_default, column_key "
+              "FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '{table}' "
+              "ORDER BY ordinal_position", "`{table}`"),
+    "postgres": ("SELECT table_name FROM information_schema.tables WHERE table_schema = '{schema}' "
+                 "AND table_type = 'BASE TABLE' ORDER BY table_name",
+                 "SELECT column_name, data_type, is_nullable, column_default, '' "
+                 "FROM information_schema.columns WHERE table_schema = '{schema}' AND table_name = '{table}' "
+                 "ORDER BY ordinal_position", '"{schema}"."{table}"'),
+}
+
+
+def dbapi(conn, dialect: str = "sqlite", schema: str = "public", skip: set[str] = frozenset()) -> dict:
+    """Schema and rows from an open DB-API connection, for Project.snapshot: "sqlite" (sqlite3), "mysql" (MySQL or
+    MariaDB: the connection's database; pymysql, mysqlclient, ...) or "postgres" (`schema`; psycopg, ...).
+    `skip`: tables left out (e.g. a migrations table). Columns are [name, type, nullable, default, key]."""
+    if dialect == "sqlite":
+        out = _sqlite(conn)
+    elif dialect in QUERIES:
+        tables_sql, columns_sql, quoted = QUERIES[dialect]
+        cur = conn.cursor()
+        cur.execute(tables_sql.format(schema=schema))
+        out = {"schema": {}, "rows": {}}
+        for (table,) in cur.fetchall():
+            cur.execute(columns_sql.format(schema=schema, table=table))
+            out["schema"][table] = [[_plain(v) for v in col] for col in cur.fetchall()]
+            cur.execute(f"SELECT * FROM {quoted.format(schema=schema, table=table)}")
+            names = [d[0] for d in cur.description]
+            out["rows"][table] = [{k: _plain(v) for k, v in zip(names, row)} for row in cur.fetchall()]
+        cur.close()
+        conn.rollback()  # end the read transaction, so the next run's setup isn't blocked by it
+    else:
+        raise ValueError(f"dialect {dialect!r}: use sqlite, mysql or postgres")
+    for table in skip:
+        out["schema"].pop(table, None)
+        out["rows"].pop(table, None)
+    return out
+
+
+def _sqlite(conn: sqlite3.Connection) -> dict:
+    factory, conn.row_factory = conn.row_factory, sqlite3.Row
     try:
         out = {"schema": {}, "rows": {}}
         objects = conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master "
@@ -50,7 +115,7 @@ def database(path: pathlib.Path) -> dict:
                 out["schema"][f"index {obj['name']}"] = " ".join(obj["sql"].split())
         return out
     finally:
-        conn.close()
+        conn.row_factory = factory
 
 
 def _tool(name: str) -> str:
