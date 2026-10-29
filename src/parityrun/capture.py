@@ -103,7 +103,7 @@ def context_regex(text: str, value: str, kind: str = "") -> str:
     prefix, last = "", 0
     for m in re.finditer(r"[\w\-.~+=]{8,}", before):  # other random values before it: any text there
         if dynamic(m.group(0)):
-            prefix += re.escape(before[last:m.start()]) + r"[^\"'<>\s]+"
+            prefix += re.escape(before[last:m.start()]) + "[^\"'<>\\s]+"
             last = m.end()
     prefix += re.escape(before[last:])
     stop = "\"'<>\\s&?#" + ("" if "/" in value else "/")
