@@ -63,6 +63,9 @@ class Project:
     there is recorded as app/<path>. `databases` may then name a file inside the app (e.g. database/app.sqlite)."""
     isolate_skip: list[str] = dataclasses.field(default_factory=lambda: [".git", ".hg", ".svn"])
     """Folder and file names not copied for an isolated run."""
+    coverage: bool = False
+    """Measure which lines of a PHP implementation's code the scenarios run (PCOV or Xdebug): kept beside each
+    recording as coverage.json, totalled by `record` and listed per file by `parityrun coverage`."""
     ignore_files: list[str] = dataclasses.field(default_factory=list)
     """Path patterns never recorded (fnmatch): logs, caches, sessions ("storage/logs/*", "*.log")."""
     random_files: set[str] = dataclasses.field(default_factory=set)

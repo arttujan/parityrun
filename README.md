@@ -49,8 +49,13 @@ are never changed and whatever it writes there is recorded.
 forms. Each page shows how many of the app's routes have been visited, and http://127.0.0.1:8000/__parityrun lists
 the ones still to go. Press Finish there: what you did becomes `scenarios/visit.yaml` (form tokens and new ids are
 captured so it replays on a fresh app), and it is recorded twice to prove it replays. Run `capture` again until every
-route is visited. `parityrun routes` shows the list in the terminal. Then check another version against the
-recordings with `parityrun check --impl NAME`.
+route is visited. `parityrun routes` shows the list in the terminal.
+
+For a PHP app, `record` also measures which lines of its code the scenarios ran (with the
+[PCOV](https://github.com/krakjoe/pcov) extension, or Xdebug) and `parityrun coverage` lists every file with the lines
+no scenario ran yet, files nothing loaded included. That is what parity means here: identical on the recorded
+scenarios, which run that share of the code. Then check another version against the recordings with
+`parityrun check --impl NAME`.
 
 Routes are read from Laravel (`artisan route:list`), Symfony (`debug:router`), Slim, plain PHP pages and hand-made
 PHP routers, Express-style JavaScript and TypeScript routers, Flask, FastAPI, Django, axum and actix.
@@ -143,6 +148,7 @@ PROJECT = Project(
 | `redirects` | record a 3xx answer's `Location` |
 | `isolate` | run each implementation in a fresh copy of its folder; what it creates, changes or deletes there is recorded as `app/<path>` (`isolate_skip`: names not copied, default `.git`) |
 | `ignore_files` | path patterns never recorded, e.g. `["storage/logs/*", "*.log"]` |
+| `coverage` | measure which lines of a PHP implementation the scenarios run (needs PCOV or Xdebug): `record` prints the total, `parityrun coverage` lists every file and the lines no scenario ran |
 | `random_files` | file names random by design: only their size is compared |
 | `interleaved_files` | JSON Lines files written by parallel work: line order is free |
 | `measured_keys`, `measured_companions` | wall-clock numbers (e.g. `seconds`), and numbers computed from them beside them (e.g. `cost_usd`): `<measured>` |
@@ -204,7 +210,7 @@ parityrun record [scenario ...]            run the reference twice per scenario,
 parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
                                            compare; prints each failing comparison and the parity %, writes
                                            out/report-<impl>.json and keeps the run's pictures in out/<impl>/<name>/
-parityrun coverage                         the endpoints in golden/endpoints.json no scenario calls
+parityrun coverage                         the routes no scenario calls, and the PHP lines no scenario ran
 parityrun init [PATH] [--force] [--no-start]
                                            set parityrun up in an existing app's folder (writes parityrun/)
 parityrun routes                           read the reference's routes from its code into golden/endpoints.json

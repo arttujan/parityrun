@@ -23,7 +23,7 @@ import time
 import httpx
 import yaml
 
-from . import htmlnorm, snapshot
+from . import coverage, htmlnorm, snapshot
 from .normalize import Normalizer
 from .project import Project, RunInfo
 from .stubs import Stub
@@ -59,13 +59,17 @@ class Implementation:
         port = free_port()
         cmd = _command([part.format(python=sys.executable, port=port, repo=repo) for part in self.spec["cmd"]])
         self.cwd = cwd or self.folder
+        measure = {}
+        if project.coverage and coverage.is_php(cmd):  # each request's lines, into <work>/coverage
+            cmd = coverage.php_command(cmd, self.cwd, data_dir.parent / "coverage-prepend.php")
+            measure = {"PARITYRUN_COVERAGE": str(data_dir.parent / "coverage")}
         stub = f"http://127.0.0.1:{stub_port}"
         self.port = port
         info = RunInfo(data_dir=data_dir, work=data_dir.parent, port=port, stub_url=stub, repo=repo)
         self.info = info
         if project.setup:  # e.g. an outside database emptied, so every run starts the same
             project.setup(info)
-        env = {**os.environ, "PARITYRUN_STUB": stub, **(project.env(info) if project.env else {}),
+        env = {**os.environ, "PARITYRUN_STUB": stub, **measure, **(project.env(info) if project.env else {}),
                **{k: str(v).replace("{stub}", stub).replace("{python}", sys.executable).replace("{repo}", str(repo))
                   .replace("{data}", data_dir.as_posix()) for k, v in (extra or {}).items()}}
         self.env = env
@@ -404,6 +408,10 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
             proc.kill()
             proc.wait()
         stub.close()
+    measured_lines = coverage.collect(work / "coverage", impl.cwd) if project.coverage else None
+    if measured_lines:  # beside the recording, not in it: record keeps it as golden/<name>/coverage.json
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "coverage.json").write_text(json.dumps(measured_lines, indent=1) + "\n", encoding="utf-8")
     if project.snapshot:  # an outside database (MySQL, PostgreSQL, ...) read by the project
         db = project.snapshot(impl.info)
     else:  # in the data folder, or (isolated) where the app keeps it in its own folder

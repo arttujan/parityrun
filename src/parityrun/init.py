@@ -288,6 +288,8 @@ def project_file(stack: Stack, ready: str) -> str:
         settings.append(f"    databases={q(stack.databases)},")
     if stack.ignore_files:
         settings.append(f"    ignore_files={q(stack.ignore_files)},")
+    if stack.name == "php":
+        settings.append("    coverage=True,")
     return (f'"""parityrun settings for this app ({stack.label}), written by `parityrun init`.\n\n'
             "  parityrun record                 record what the app does now (golden/)\n"
             "  parityrun check --impl NAME      check another version against it (add NAME to impls.json)\n"

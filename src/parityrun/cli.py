@@ -21,6 +21,7 @@ import shutil
 import sys
 import tempfile
 
+from . import coverage as code_coverage
 from . import runner
 from .project import Project, load
 
@@ -51,6 +52,9 @@ def record(project: Project, names: list[str], force: bool) -> int:
               f"{len(runs[0]['files'])} files")
         for d in dirs:
             shutil.rmtree(d, ignore_errors=True)
+    if project.coverage:
+        print()
+        code_coverage.show(project.golden, impl.folder, detail=False)
     return 1 if failed else 0
 
 
@@ -121,13 +125,25 @@ def covered(project: Project) -> set[str]:
 
 
 def coverage(project: Project, quiet: bool = False) -> int:
-    templates = _templates(project)
-    hit = covered(project)
-    missing = [f"{m} {p}" for m, p in templates if f"{m} {p}" not in hit]
-    print(f"Endpoint coverage: {len(hit)}/{len(templates)} ({100 * len(hit) / len(templates):.0f} %)")
+    """The routes the scenarios call (golden/endpoints.json) and, unless quiet, the PHP lines they ran."""
+    shown = False
+    if (project.golden / "endpoints.json").exists():
+        templates = _templates(project)
+        hit = covered(project)
+        missing = [f"{m} {p}" for m, p in templates if f"{m} {p}" not in hit]
+        print(f"Endpoint coverage: {len(hit)}/{len(templates)} ({100 * len(hit) / len(templates):.0f} %)"
+              if templates else "Endpoint coverage: golden/endpoints.json lists no routes")
+        if not quiet:
+            for e in missing:
+                print(f"  not covered: {e}")
+        shown = True
     if not quiet:
-        for e in missing:
-            print(f"  not covered: {e}")
+        root = runner.Implementation(project, project.reference).folder
+        shown = code_coverage.show(project.golden, root) or shown
+    if not shown:
+        print("Nothing to show yet: run `parityrun routes` for the routes, and record with coverage=True for the "
+              "lines of PHP code the scenarios run.")
+        return 1
     return 0
 
 
