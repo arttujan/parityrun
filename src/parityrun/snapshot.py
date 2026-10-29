@@ -1,6 +1,7 @@
 """What a scenario leaves behind: SQLite databases (schema + rows) and the files in the data folder; pictures are
 kept small and compared by structural similarity, videos by their duration, size, sound and a few frames."""
 
+import fnmatch
 import hashlib
 import io
 import json
@@ -144,16 +145,24 @@ def video(path: pathlib.Path, frames_prefix: pathlib.Path) -> tuple[dict, list[p
     return desc, frames
 
 
+def ignored(rel: str, patterns) -> bool:
+    """A relative path one of the patterns (fnmatch: "storage/logs/*", "*.log") leaves out."""
+    return any(fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+
+
 def files(data_dir: pathlib.Path, frames_dir: pathlib.Path | None = None, skip: set[str] = frozenset(),
-          random: set[str] = frozenset(), interleaved: set[str] = frozenset()) -> tuple[dict, dict[str, pathlib.Path]]:
+          random: set[str] = frozenset(), interleaved: set[str] = frozenset(), ignore=(),
+          only: set[str] | None = None) -> tuple[dict, dict[str, pathlib.Path]]:
     """{relative path: description} and the images to compare by eye-distance (SSIM); a video's frames count as
     images named <video>#frame<k>. `skip`: file names left out (the databases); `random`: compared by size only;
-    `interleaved`: JSON Lines files whose lines may come in any order."""
+    `interleaved`: JSON Lines files whose lines may come in any order; `ignore`: path patterns left out; `only`: just
+    these relative paths (the files a run changed)."""
     frames_dir = frames_dir or data_dir.parent / "frames"
     described, images = {}, {}
-    for path in sorted(p for p in data_dir.rglob("*") if p.is_file()):
+    paths = [data_dir / rel for rel in only] if only is not None else [p for p in data_dir.rglob("*") if p.is_file()]
+    for path in sorted(paths):
         rel = path.relative_to(data_dir).as_posix()
-        if path.name in skip:
+        if path.name in skip or ignored(rel, ignore):
             continue
         ext = path.suffix.lower()
         if ext == ".json":

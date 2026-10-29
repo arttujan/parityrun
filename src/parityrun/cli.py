@@ -6,8 +6,9 @@ them, and list the endpoints the scenarios don't use yet.
   parityrun [--project FILE] check [--quick | --slow] [--impl NAME] [scenario ...]
                                                                    compare an implementation with the recordings
   parityrun [--project FILE] coverage                              which endpoints (golden/endpoints.json) are used
+  parityrun init [PATH] [--force] [--no-start]                     set parityrun up in an existing app's folder
 
-FILE (default parityrun_project.py) defines PROJECT = parityrun.Project(...).
+FILE (default parityrun_project.py, else parityrun/parityrun_project.py) defines PROJECT = parityrun.Project(...).
 """
 
 import argparse
@@ -145,7 +146,17 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     chk.add_argument("--quick", action="store_true", help="only the project's quick scenarios")
     chk.add_argument("--slow", "--video", action="store_true", dest="slow", help="only the others")
     sub.add_parser("coverage", help="which endpoints in golden/endpoints.json the scenarios call")
+    first = sub.add_parser("init", help="set parityrun up in an existing app's folder (writes parityrun/)")
+    first.add_argument("path", nargs="?", default=".", help="the app's folder (default: here)")
+    first.add_argument("--force", action="store_true", help="write parityrun/ again even if it exists")
+    first.add_argument("--no-start", action="store_true", help="don't start the app to look at it")
     args = parser.parse_args(argv)
+    if args.cmd == "init":
+        from .init import init
+        return init(pathlib.Path(args.path), force=args.force, check_start=not args.no_start)
+    if project is None and args.project == "parityrun_project.py" and not pathlib.Path(args.project).exists() \
+            and pathlib.Path("parityrun", "parityrun_project.py").exists():  # what `init` wrote, from the app's folder
+        args.project = str(pathlib.Path("parityrun", "parityrun_project.py"))
     project = project or load(args.project)
     if args.cmd == "record":
         return record(project, args.scenarios or runner.all_scenarios(project), args.force)

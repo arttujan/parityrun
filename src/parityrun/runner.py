@@ -44,33 +44,41 @@ class Implementation:
         if name not in spec:
             raise SystemExit(f"No implementation {name!r} in impls.json ({', '.join(spec)})")
         self.project, self.name, self.spec = project, name, spec[name]
+        self.cwd = self.folder
 
-    def start(self, data_dir: pathlib.Path, stub_port: int, log: pathlib.Path,
-              extra: dict | None = None) -> tuple[subprocess.Popen, str]:
-        """Start the service on a free port with the project's environment; wait until its ready path answers 200."""
+    @property
+    def folder(self) -> pathlib.Path:
+        """Where the implementation runs (impls.json `cwd`, relative to the project's repo)."""
+        return self.project.repo / self.spec.get("cwd", ".")
+
+    def start(self, data_dir: pathlib.Path, stub_port: int, log: pathlib.Path, extra: dict | None = None,
+              cwd: pathlib.Path | None = None, accept=None) -> tuple[subprocess.Popen, str]:
+        """Start the service on a free port with the project's environment (in `cwd`: an isolated copy of its folder);
+        wait until its ready path answers 200 (or any status `accept` takes)."""
         project, repo = self.project, self.project.repo
         port = free_port()
-        cmd = [part.format(python=sys.executable, port=port, repo=repo) for part in self.spec["cmd"]]
+        cmd = _command([part.format(python=sys.executable, port=port, repo=repo) for part in self.spec["cmd"]])
+        self.cwd = cwd or self.folder
         stub = f"http://127.0.0.1:{stub_port}"
         self.port = port
         info = RunInfo(data_dir=data_dir, work=data_dir.parent, port=port, stub_url=stub, repo=repo)
         self.info = info
         if project.setup:  # e.g. an outside database emptied, so every run starts the same
             project.setup(info)
-        env ={**os.environ, "PARITYRUN_STUB": stub, **(project.env(info) if project.env else {}),
+        env = {**os.environ, "PARITYRUN_STUB": stub, **(project.env(info) if project.env else {}),
                **{k: str(v).replace("{stub}", stub).replace("{python}", sys.executable).replace("{repo}", str(repo))
                   .replace("{data}", data_dir.as_posix()) for k, v in (extra or {}).items()}}
         self.env = env
         out = open(log, "w", encoding="utf-8")  # noqa: SIM115 - closed with the process
-        proc = subprocess.Popen(cmd, cwd=repo / self.spec.get("cwd", "."), env=env, stdout=out,
-                                stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(cmd, cwd=self.cwd, env=env, stdout=out, stderr=subprocess.STDOUT)
         base = f"http://127.0.0.1:{port}"
         deadline = time.time() + project.ready_timeout
+        accept = accept or (lambda status: status == 200)
         while time.time() < deadline:
             if proc.poll() is not None:
                 raise RuntimeError(f"{self.name} exited at start; see {log}")
             try:
-                if httpx.get(f"{base}{project.ready}", headers=project.headers, timeout=30).status_code == 200:
+                if accept(httpx.get(f"{base}{project.ready}", headers=project.headers, timeout=30).status_code):
                     return proc, base
             except httpx.HTTPError:
                 pass
@@ -82,11 +90,44 @@ class Implementation:
         """One command-line run next to the running service (same data, same environment): exit code and output."""
         if "cli" not in self.spec:
             raise RuntimeError(f"{self.name} has no cli in impls.json")
-        cmd = [part.format(python=sys.executable, repo=self.project.repo) for part in self.spec["cli"]] + args
-        proc = subprocess.run(cmd, cwd=self.project.repo / self.spec.get("cwd", "."),
-                              env={**self.env, "COLUMNS": "100"}, capture_output=True, timeout=900)
+        cmd = _command([part.format(python=sys.executable, repo=self.project.repo) for part in self.spec["cli"]]) + args
+        proc = subprocess.run(cmd, cwd=self.cwd, env={**self.env, "COLUMNS": "100"}, capture_output=True, timeout=900)
         text = lambda b: b.decode("utf-8", "replace").replace("\r\n", "\n")  # noqa: E731
         return {"exit": proc.returncode, "stdout": text(proc.stdout), "stderr": text(proc.stderr)}
+
+
+def _command(cmd: list[str]) -> list[str]:
+    """A bare program name found on PATH, so Windows starts `npm` (npm.cmd) and the like too."""
+    if cmd and "/" not in cmd[0] and "\\" not in cmd[0]:
+        return [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
+    return cmd
+
+
+def copy_app(impl: Implementation, target: pathlib.Path) -> dict[str, tuple[int, int]]:
+    """The implementation's folder copied to `target` for one run (Project.isolate), without .git and the like or the
+    parityrun project folder; returns each file's (size, mtime) to tell later what the run changed."""
+    skip, root = set(impl.project.isolate_skip), impl.project.root.resolve()
+    ignore = lambda folder, names: [n for n in names  # noqa: E731
+                                    if n in skip or pathlib.Path(folder, n).resolve() == root]
+    shutil.copytree(impl.folder, target, ignore=ignore, symlinks=True)
+    return {p.relative_to(target).as_posix(): _stamp(p) for p in target.rglob("*") if p.is_file()}
+
+
+def _stamp(path: pathlib.Path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_size, st.st_mtime_ns
+
+
+def app_changes(impl: Implementation, copy: pathlib.Path, baseline: dict) -> tuple[set[str], set[str]]:
+    """The files a run created or changed in its copy, and the ones it deleted (a rewrite to the same bytes isn't)."""
+    now = {p.relative_to(copy).as_posix(): p for p in copy.rglob("*") if p.is_file()}
+    changed = set()
+    for rel, path in now.items():
+        if rel not in baseline:
+            changed.add(rel)
+        elif _stamp(path) != baseline[rel] and path.read_bytes() != (impl.folder / rel).read_bytes():
+            changed.add(rel)
+    return changed, set(baseline) - set(now)
 
 
 def _resolve(expr: str, ctx: dict):
@@ -201,7 +242,7 @@ def _capture(r: httpx.Response, captures: dict, kind: str, where: str) -> dict:
         match = re.search(rule["regex"], text)
         if not match:
             raise RuntimeError(f"{where}: capture {name} found nothing for {rule['regex']!r} in {text[:500]!r}")
-        value = match.group(1) if match.groups() else match.group(0)
+        value = next((g for g in match.groups() if g is not None), match.group(0))  # alternatives: the one that matched
         found[name] = html.unescape(value) if kind == "text/html" and "header" not in rule else value
     return found
 
@@ -272,7 +313,9 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
     if any("{fake_claude}" in str(v) for v in env.values()):
         exe = _fake_claude(work / "bin")
         env = {k: str(v).replace("{fake_claude}", exe) for k, v in env.items()}
-    proc, base = impl.start(data_dir, stub.port, work / "service.log", env)
+    app = work / "app" if project.isolate else None  # a copy of the implementation's folder: it may write anywhere
+    baseline = copy_app(impl, app) if app else {}
+    proc, base = impl.start(data_dir, stub.port, work / "service.log", env, cwd=app)
     steps, ctx, captured = [], {"stub": stub.url}, {}
     try:
         client = httpx.Client(base_url=base, headers=project.headers, timeout=180)
@@ -363,12 +406,21 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
         stub.close()
     if project.snapshot:  # an outside database (MySQL, PostgreSQL, ...) read by the project
         db = project.snapshot(impl.info)
-    else:
-        db_file = data_dir / project.databases[0] if project.databases else None
-        db = snapshot.database(db_file) if db_file and db_file.exists() else {}
-    skip = {f"{n}{s}" for n in project.databases for s in ("", "-wal", "-shm", "-journal")}
-    kinds = {"skip": skip, "random": project.random_files, "interleaved": project.interleaved_files}
+    else:  # in the data folder, or (isolated) where the app keeps it in its own folder
+        db_file = next((folder / project.databases[0] for folder in (data_dir, app) if folder
+                        and (folder / project.databases[0]).exists()), None) if project.databases else None
+        db = snapshot.database(db_file) if db_file else {}
+    skip = {f"{pathlib.PurePosixPath(n).name}{s}" for n in project.databases for s in ("", "-wal", "-shm", "-journal")}
+    kinds = {"skip": skip, "random": project.random_files, "interleaved": project.interleaved_files,
+             "ignore": project.ignore_files}
     files, images = snapshot.files(data_dir, **kinds)
+    if app:  # what the run created, changed or deleted in its copy of the app, as app/...
+        changed, deleted = app_changes(impl, app, baseline)
+        more_files, more_images = snapshot.files(app, work / "frames", only=changed, **kinds)
+        files.update({f"app/{k}": v for k, v in more_files.items()})
+        images.update({f"app/{k}": v for k, v in more_images.items()})
+        files.update({f"app/{rel}": {"deleted": True} for rel in sorted(deleted)
+                      if not snapshot.ignored(rel, project.ignore_files)})
     for prefix, folder in project.extra_roots.items():  # folders the service writes outside its data folder
         if (work / folder).exists():
             more_files, more_images = snapshot.files(work / folder, work / "frames", **kinds)

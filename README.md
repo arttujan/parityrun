@@ -29,6 +29,22 @@ pip install git+https://github.com/arttujan/parityrun@v0.2.0
 
 Python 3.10+. Videos need `ffmpeg` and `ffprobe` on PATH (or the `FFMPEG` / `FFPROBE` variables).
 
+## Start with your app
+
+In your app's folder (PHP, Laravel, Symfony, WordPress, Node.js, Django, Flask, FastAPI or Rust):
+
+```
+parityrun init        # finds how to start the app, starts it once, writes parityrun/
+parityrun record      # records what the app does now into parityrun/golden/
+```
+
+`init` starts the app in a throwaway copy, reads its home page and writes `parityrun/`: how to start the app
+(`impls.json`), the settings (`parityrun_project.py`, with notes on anything it couldn't decide, such as a MySQL
+database) and a first scenario (`scenarios/smoke.yaml`: the home page and the pages it links to, form tokens
+captured). Every run uses a fresh copy of the app's folder, so the app's own files are never changed and whatever it
+writes there is recorded. Add what people do on the site as scenario steps (see Scenarios), then check another
+version against the recordings with `parityrun check --impl NAME`.
+
 ## Try it
 
 `examples/notes` is a tiny notes service that titles each note with an LLM:
@@ -115,6 +131,8 @@ PROJECT = Project(
 | `snapshot(run)`, `setup(run)` | any other database: return `{"schema", "rows"}` to record as `db` (`parityrun.snapshot.dbapi(conn, "mysql" / "postgres" / "sqlite")` reads one); `setup` runs before each start, e.g. to empty it |
 | `html` | record HTML answers as normalised lines: attribute order, entity spelling, indentation and comments don't count |
 | `redirects` | record a 3xx answer's `Location` |
+| `isolate` | run each implementation in a fresh copy of its folder; what it creates, changes or deletes there is recorded as `app/<path>` (`isolate_skip`: names not copied, default `.git`) |
+| `ignore_files` | path patterns never recorded, e.g. `["storage/logs/*", "*.log"]` |
 | `random_files` | file names random by design: only their size is compared |
 | `interleaved_files` | JSON Lines files written by parallel work: line order is free |
 | `measured_keys`, `measured_companions` | wall-clock numbers (e.g. `seconds`), and numbers computed from them beside them (e.g. `cost_usd`): `<measured>` |
@@ -177,6 +195,8 @@ parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
                                            compare; prints each failing comparison and the parity %, writes
                                            out/report-<impl>.json and keeps the run's pictures in out/<impl>/<name>/
 parityrun coverage                         the endpoints in golden/endpoints.json no scenario calls
+parityrun init [PATH] [--force] [--no-start]
+                                           set parityrun up in an existing app's folder (writes parityrun/)
 ```
 
 `check` exits 0 only when every comparison passes. Review the diff of `golden/` before committing a new recording:

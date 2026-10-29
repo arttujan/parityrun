@@ -57,6 +57,14 @@ class Project:
     spelling, indentation and comments don't count (parityrun.htmlnorm)."""
     redirects: bool = False
     """Record the Location of every 3xx answer (`location`), normalised like everything else."""
+    isolate: bool = False
+    """Run each implementation in a fresh copy of its folder (impls.json `cwd`), so an app that writes into its own
+    folder (uploads, a SQLite file, caches) needs no data-folder setting; what a run created, changed or deleted
+    there is recorded as app/<path>. `databases` may then name a file inside the app (e.g. database/app.sqlite)."""
+    isolate_skip: list[str] = dataclasses.field(default_factory=lambda: [".git", ".hg", ".svn"])
+    """Folder and file names not copied for an isolated run."""
+    ignore_files: list[str] = dataclasses.field(default_factory=list)
+    """Path patterns never recorded (fnmatch): logs, caches, sessions ("storage/logs/*", "*.log")."""
     random_files: set[str] = dataclasses.field(default_factory=set)
     """File names that are random by design: only their size is compared."""
     interleaved_files: set[str] = dataclasses.field(default_factory=set)
