@@ -8,4 +8,4 @@ from .project import Project, RunInfo, load
 from .stubs import Stub
 
 __all__ = ["Project", "RunInfo", "Stub", "load"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
