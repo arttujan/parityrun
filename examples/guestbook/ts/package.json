@@ -1,0 +1,6 @@
+{
+  "name": "guestbook-ts",
+  "private": true,
+  "type": "module",
+  "description": "The guestbook ported to TypeScript; run with node 23.6+ (type stripping): node server.ts 8080"
+}

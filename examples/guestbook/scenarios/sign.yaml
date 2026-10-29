@@ -1,0 +1,12 @@
+description: Sign twice, follow the second to its page, see both listed newest first, and read the first.
+steps:
+  - call: GET /
+    capture: {csrf: 'name="csrf" value="([0-9a-f]+)"'}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "Åsa O'Brien", message: "Hello <world> & \"friends\"\nSecond line"}
+    capture: {first: {header: location, regex: '/entries/([0-9a-f]+)'}}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "  Tom  ", message: "Nice site!"}
+    follow: true
+  - call: GET /
+  - call: GET /entries/{{first}}

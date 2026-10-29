@@ -1,0 +1,17 @@
+description: Delete an entry with the page's token; a wrong token, a deleted entry and unknown pages are refused.
+steps:
+  - call: GET /
+    capture: {csrf: 'name="csrf" value="([0-9a-f]+)"'}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "Kim", message: "Delete me"}
+    capture: {entry: {header: location, regex: '/entries/([0-9a-f]+)'}}
+  - call: POST /entries/{{entry}}/delete
+    form: {csrf: "wrong"}
+  - call: POST /entries/{{entry}}/delete
+    form: {csrf: "{{csrf}}"}
+    follow: true
+  - call: GET /entries/{{entry}}
+  - call: POST /entries/{{entry}}/delete
+    form: {csrf: "{{csrf}}"}
+  - call: GET /sign
+  - call: GET /nowhere

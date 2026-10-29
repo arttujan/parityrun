@@ -1,0 +1,6 @@
+{
+  "php": {"cwd": "php", "cmd": ["php", "-S", "127.0.0.1:{port}", "index.php"]},
+  "js": {"cwd": "js", "cmd": ["node", "server.js", "{port}"]},
+  "ts": {"cwd": "ts", "cmd": ["node", "server.ts", "{port}"]},
+  "rust": {"cwd": "rust", "cmd": ["{repo}/rust/target/release/guestbook", "{port}"]}
+}

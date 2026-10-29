@@ -6,8 +6,16 @@ entities decoded and escaped one way, whitespace runs collapsed, whitespace betw
 `<pre>` and `<textarea>` keep their text as it is. Everything else (tags, attribute values, text) must match.
 """
 
+import re
 from html import escape
 from html.parser import HTMLParser
+
+SPACE = re.compile(r"[ \t\n\r\f]+")  # HTML's whitespace; a no-break space is text
+
+
+def _collapse(text: str) -> str:
+    return SPACE.sub(" ", text).strip(" ")
+
 
 VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
 KEEP = {"pre", "textarea"}  # whitespace is content here
@@ -19,7 +27,7 @@ def _tag(tag: str, attrs: list[tuple[str, str | None]]) -> str:
     for name, value in sorted(attrs, key=lambda a: a[0]):
         value = value or ""
         if name == "class":
-            value = " ".join(value.split())
+            value = _collapse(value)
         parts.append(f' {name}="{escape(value)}"')
     return f"<{tag}{''.join(parts)}>"
 
@@ -38,7 +46,7 @@ class _Lines(HTMLParser):
             if data:
                 self.lines.append(escape(data.removeprefix("\n"), quote=False))  # a browser drops that newline
             return
-        data = " ".join(data.split())
+        data = _collapse(data)
         if data:
             self.lines.append(data if self.raw else escape(data, quote=False))
 
@@ -69,7 +77,7 @@ class _Lines(HTMLParser):
 
     def handle_decl(self, decl):
         self.flush()
-        self.lines.append(f"<!{' '.join(decl.split()).lower()}>")
+        self.lines.append(f"<!{_collapse(decl).lower()}>")
 
     def handle_pi(self, data):
         self.flush()

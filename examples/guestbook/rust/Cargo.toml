@@ -1,0 +1,8 @@
+[package]
+name = "guestbook"
+version = "0.1.0"
+edition = "2021"
+description = "The guestbook ported to Rust (std only): it must behave exactly like ../php/index.php"
+publish = false
+
+[dependencies]

@@ -1,0 +1,17 @@
+description: Refused forms say why and keep what was written; length limits count characters, not bytes; a wrong or missing token is refused; PHP's trim keeps a no-break space.
+steps:
+  - call: GET /
+    capture: {csrf: 'name="csrf" value="([0-9a-f]+)"'}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "   ", message: ""}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "äääääääääääääääääääääääääääääääääääääääää", message: "ööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööö"}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "ääääääääääääääääääääääääääääääääääääääää", message: "öööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööööö"}
+  - call: POST /sign
+    form: {csrf: "wrong", name: "Ann", message: "Hi"}
+  - call: POST /sign
+    form: {name: "Ann", message: "Hi"}
+  - call: POST /sign
+    form: {csrf: "{{csrf}}", name: "\u00a0", message: "\tSpaces around\n "}
+  - call: GET /

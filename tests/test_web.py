@@ -29,6 +29,7 @@ def test_html_still_tells_real_differences():
     assert lines("<p>x</p>") != lines("<div>x</div>")
     assert lines('<input checked>') != lines('<input>')
     assert lines("<p>a <b>b</b></p>") == ["<p>", "a", "<b>", "b", "</b>", "</p>"]
+    assert lines("<p> </p>") == ["<p>", " ", "</p>"]  # a no-break space is text, not layout
 
 
 def test_html_keeps_whitespace_where_it_is_content():

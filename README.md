@@ -41,6 +41,16 @@ parityrun --project examples/notes/parityrun_project.py check       # 100 % pari
 Change the system prompt in `notes_service.py` and run `check` again: the `prompts` comparison fails and shows the
 difference.
 
+`examples/guestbook` is a PHP site (forms, a CSRF cookie, redirects, HTML pages) with ports to JavaScript, TypeScript
+and Rust that match it to 100 %:
+
+```
+parityrun --project examples/guestbook/parityrun_project.py record              # needs php on PATH
+parityrun --project examples/guestbook/parityrun_project.py check --impl js     # node
+parityrun --project examples/guestbook/parityrun_project.py check --impl ts     # node 23.6+
+parityrun --project examples/guestbook/parityrun_project.py check --impl rust   # cargo build --release in rust/ first
+```
+
 ## A project
 
 A project folder holds:
@@ -102,6 +112,9 @@ PROJECT = Project(
 | `headers` | sent with every request (e.g. a CSRF header) |
 | `events` | a server-sent events path a step's `sse: n` listens to |
 | `databases` | SQLite files in the data folder; the first is recorded as `db` |
+| `snapshot(run)`, `setup(run)` | any other database: return `{"schema", "rows"}` to record as `db` (`parityrun.snapshot.dbapi(conn, "mysql" / "postgres" / "sqlite")` reads one); `setup` runs before each start, e.g. to empty it |
+| `html` | record HTML answers as normalised lines: attribute order, entity spelling, indentation and comments don't count |
+| `redirects` | record a 3xx answer's `Location` |
 | `random_files` | file names random by design: only their size is compared |
 | `interleaved_files` | JSON Lines files written by parallel work: line order is free |
 | `measured_keys`, `measured_companions` | wall-clock numbers (e.g. `seconds`), and numbers computed from them beside them (e.g. `cost_usd`): `<measured>` |
@@ -138,6 +151,10 @@ steps:
 | `id` | names this step's JSON for later steps |
 | `body` | JSON; a whole `"{{x}}"` keeps its type; `$merge: "{{x}}"` sends `x` back with keys changed |
 | `raw: file` | sends `fixtures/<file>` as the body |
+| `form` | a web form (urlencoded); `true` is a ticked checkbox (`on`), `false` leaves the field out |
+| `upload` | `{field: fixture}`: files sent with `form` as multipart |
+| `capture` | `{name: regex}` over the answer's text, or `{name: {header: location, regex: ...}}`: `{{name}}` in later steps; values of 8+ characters (CSRF tokens) are recorded as `<name>` |
+| `follow` | follow redirects to the page they end on (recorded as `redirects`) |
 | `headers` | request headers (a 206 answer is compared by its range and length) |
 | `llm` | replies for the LLM stub; they wait until asked for, so a background task may take them later |
 | `until`, `timeout`, `every` | repeat until `{path, equals / in / not / length}` holds |

@@ -336,8 +336,8 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
                 clip.write_bytes(r.content)
                 entry["video"], frames = snapshot.video(clip, out / f"response-{k}")
                 entry["frames"] = [f.name for f in frames]
-            elif project.html and kind == "text/html":  # as a browser reads it, one line per tag or text
-                entry["html"] = htmlnorm.lines(r.text)
+            elif project.html and (kind == "text/html" or not r.content):  # as a browser reads it; an empty
+                entry["html"] = htmlnorm.lines(r.text)  # answer (a redirect) is an empty page whatever its type
             else:
                 entry["text"] = r.text
             if r.headers.get("content-disposition"):
