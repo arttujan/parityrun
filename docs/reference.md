@@ -6,6 +6,7 @@ scenario key and every command.
 - [What is compared](#what-is-compared)
 - [Starting from an existing app](#starting-from-an-existing-app): `init`, `capture`, `routes`, code coverage
 - [Porting with an AI tool](#porting-with-an-ai-tool): `port`
+- [Libraries](#libraries): code with no pages, called function by function
 - [A project](#a-project): the files, `impls.json`, `parityrun_project.py` and its settings
 - [Databases](#databases)
 - [Scenarios](#scenarios)
@@ -123,6 +124,57 @@ turn's result (parity, every scenario's passing checks, the time the tool took) 
 `--setup-only` writes the folder, the `impls.json` entry and `PORTING.md` and stops, for porting by hand or in your
 own tool's chat: `parityrun check --impl ts` checks the port at any time.
 
+## Libraries
+
+A library has no pages: its scenarios call it. A step is a function, a static method, a new object or a method on
+one, always under the original's names:
+
+```yaml
+steps:
+  - fn: Shop\slug
+    args: ["Hello World"]            # a list, or named arguments: {text: "Hello World"}
+  - fn: Shop\Cart::fromJson          # a static method
+    args: ['{"lines": {}}']
+  - new: Shop\Cart                   # an object, kept for the steps after it
+    args: [EUR]
+    as: cart
+  - fn: cart.add                     # a method on it
+    args: [apple, 2]
+    id: added                        # later steps use {{added.value}}
+```
+
+Each call is recorded as `result`: `{"value": ...}` (an object as `{"$object": class, its public properties}`, an
+enum case as `{"$enum": "Class::CASE"}`, nothing as `null`), or `{"error": {"class": ..., "message": ...}}` when it
+throws, with `"output"` when it printed. Files, databases and outside calls are recorded as for an app.
+
+**How it is called.** Every implementation of a library is a small HTTP server, a shim, that turns each step into a
+call: `POST /call` with `{"fn" | "new", "args", "as"}`, answering as above, and `GET /health`. parityrun ships them in
+`{shims}` (an `impls.json` placeholder):
+
+- `{shims}/library.php` serves a PHP library: `PARITYRUN_LIB` names the files to load, comma-separated and relative
+  to the working folder, wildcards allowed (default `vendor/autoload.php`). With `coverage=True` it writes the lines
+  run after every call.
+- `library.js`, `library.ts` and `library.rs` (with `json.rs`, JSON without crates) are the templates a port fills in:
+  tables of the original's functions and classes (JavaScript, TypeScript) or a `call` function (Rust). The rest of
+  each is the protocol and stays as it is.
+
+```json
+{"php":  {"cwd": "php", "cmd": ["php", "{shims}/library.php"], "env": {"PORT": "{port}", "PARITYRUN_LIB": "src/*.php"}},
+ "node": {"cwd": "../shop-js", "cmd": ["node", "shim.js"], "env": {"PORT": "{port}"}}}
+```
+
+**Setting it up.** `parityrun init` tells a PHP library by its composer.json (`"type": "library"`) or by having no
+`index.php` and no framework. It writes the shim's settings (`PARITYRUN_LIB`: the autoloader and the files that declare
+functions, or every file of the API), `library=True` and `ready="/health"` in the project, the API read from the code
+into `golden/endpoints.json` (functions, public static and instance methods, the classes `new` can make) and
+`scenarios/calls.yaml`, with that API listed at its top and the calls that need no argument. Write the calls people
+make there, with real arguments, then `record`. `parityrun routes` lists the API again with what the scenarios call;
+`coverage` shows the parts no scenario calls and, for PHP, the lines no call ran.
+
+**Porting it.** `parityrun port --to ...` starts the port as an empty library beside the shim template, and
+`PORTING.md` tells the AI tool how the scenarios call it and what to fill in. `examples/cart` is a PHP library with
+JavaScript, TypeScript and Rust ports, each with its shim filled in.
+
 ## A project
 
 A project folder (`parityrun/` after `init`) holds:
@@ -136,7 +188,8 @@ golden/<name>/          the recordings (written by `record`, committed), with co
 golden/endpoints.json   every route, for `coverage` and `capture`
 ```
 
-`impls.json`: a working directory (relative to `repo`), a command with `{port}`, `{repo}` and `{python}` filled in,
+`impls.json`: a working directory (relative to `repo`), a command with `{port}`, `{repo}`, `{python}` and
+`{shims}` (parityrun's shims, see Libraries) filled in,
 and optionally a `cli` command for command-line steps. A program named without a path is looked up on PATH.
 Optionally too: `env`, environment values for this implementation only (`{port}`, `{repo}`, `{python}` filled in, on
 top of the project's `env()`); `build`, a command run in its folder before `record` or `check` (a failed build is
@@ -196,6 +249,7 @@ PROJECT = Project(
 | `isolate` | run each implementation in a fresh copy of its folder; what it creates, changes or deletes there is recorded as `app/<path>` (`isolate_skip`: names not copied, default `.git`) |
 | `ignore_files` | path patterns never recorded, e.g. `["storage/logs/*", "*.log"]` |
 | `coverage` | measure which lines of a PHP implementation the scenarios run (PCOV or Xdebug) |
+| `library` | the reference is a library its scenarios call through a shim (see Libraries) |
 | `databases` | SQLite files in the data folder (or, isolated, in the app's folder); the first is recorded as `db` |
 | `snapshot(run)`, `setup(run)` | any other database (see Databases); `setup` runs before each start |
 | `random_files` | file names random by design: only their size is compared |
@@ -271,6 +325,7 @@ steps:
 | `ignore` | dotted paths (`*` = any key) that depend on the machine, not the code |
 | `unordered` | compare a list response without its order |
 | `cli` | run the command line instead of a request: exit code, stdout and stderr are compared |
+| `fn`, `new`, `args`, `as` | a call into a library instead of a request (see [Libraries](#libraries)) |
 
 Quote text with a comma inside `{...}`: YAML splits it otherwise, and the loader refuses such files.
 
@@ -323,4 +378,15 @@ parityrun --project examples/guestbook/parityrun_project.py check --impl js     
 parityrun --project examples/guestbook/parityrun_project.py check --impl ts     # node 23.6+
 parityrun --project examples/guestbook/parityrun_project.py check --impl rust   # cargo build --release in rust/ first
 parityrun --project examples/guestbook/parityrun_project.py capture             # browse it yourself
+```
+
+`examples/cart` is a PHP library (functions, a class, exceptions, printed output) with ports to JavaScript,
+TypeScript and Rust, each with its shim, that match it to 100 %:
+
+```
+parityrun --project examples/cart/parityrun_project.py record              # php
+parityrun --project examples/cart/parityrun_project.py check --impl js     # node
+parityrun --project examples/cart/parityrun_project.py check --impl ts     # node 23.6+
+parityrun --project examples/cart/parityrun_project.py check --impl rust   # cargo (check builds it)
+parityrun --project examples/cart/parityrun_project.py routes              # its API, and what the scenarios call
 ```

@@ -8,7 +8,7 @@ tool, it can do the port too, turn by turn, until the new version matches.
 ## Install
 
 ```
-pip install git+https://github.com/arttujan/parityrun@v0.4.0
+pip install git+https://github.com/arttujan/parityrun@v0.5.0
 ```
 
 Python 3.10 or newer, and whatever your app itself needs to run (for a PHP app: `php` on PATH).
@@ -60,7 +60,9 @@ LLM and every call to an outside service. Random ids, tokens and times are norma
 (for PHP) run the share of the code that `parityrun coverage` shows; a path no scenario takes is not proven, so
 capture until coverage is where you want it.
 
-`init` recognises PHP (plain, Laravel, Symfony, WordPress), Node.js, Python (Django, Flask, FastAPI) and Rust apps.
+`init` recognises PHP (plain, Laravel, Symfony, WordPress), Node.js, Python (Django, Flask, FastAPI) and Rust apps,
+and PHP libraries: code with no pages, whose scenarios call its functions and classes (`fn:`, `new:`) instead of
+visiting pages, and whose port gets a ready-made shim to fill in.
 Everything else (settings, scenario files, databases, LLM and outside-service stubs, examples):
 [docs/reference.md](docs/reference.md).
 

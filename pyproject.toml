@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parityrun"
-version = "0.4.0"
+version = "0.5.0"
 description = "Port your app to another language with your AI tool, and prove the port behaves exactly like the original"
 readme = "README.md"
 license = "MIT"
