@@ -127,7 +127,8 @@ no build step. So:
 """ + NODE_NOTES,
     "rust": """\
 parityrun builds it with `cargo build --release` in this folder and starts `target/release/{package}`. Crates are
-fine: add them to Cargo.toml. Keep the package name `{package}`: it is the program's name.""",
+fine: add them to Cargo.toml. Keep the package name `{package}`: it is the program's name. Keep `[workspace]`
+in Cargo.toml too: without it, a Cargo.toml in a folder above can take the port in, and it no longer builds.""",
 }
 
 
