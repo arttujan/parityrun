@@ -36,3 +36,6 @@ Homepage = "https://github.com/arttujan/parityrun"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+parityrun = ["shims/*"]

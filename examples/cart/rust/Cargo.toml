@@ -1,0 +1,11 @@
+[package]
+name = "cart"
+version = "0.1.0"
+edition = "2021"
+description = "The cart library ported to Rust (std only), with its parityrun shim as the program"
+publish = false
+
+[dependencies]
+
+# Its own workspace: a Cargo.toml in a folder above does not take it in.
+[workspace]

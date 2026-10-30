@@ -1,0 +1,7 @@
+{
+  "php": {"cwd": "php", "cmd": ["php", "{shims}/library.php"], "env": {"PORT": "{port}", "PARITYRUN_LIB": "src/*.php"}},
+  "js": {"cwd": "js", "cmd": ["node", "shim.js"], "env": {"PORT": "{port}"}},
+  "ts": {"cwd": "ts", "cmd": ["node", "shim.ts"], "env": {"PORT": "{port}"}},
+  "rust": {"cwd": "rust", "cmd": ["{repo}/rust/target/release/cart"], "env": {"PORT": "{port}"},
+           "build": ["cargo", "build", "--release", "--quiet"], "skip": ["target"]}
+}

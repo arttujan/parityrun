@@ -66,6 +66,10 @@ class Project:
     coverage: bool = False
     """Measure which lines of a PHP implementation's code the scenarios run (PCOV or Xdebug): kept beside each
     recording as coverage.json, totalled by `record` and listed per file by `parityrun coverage`."""
+    library: bool = False
+    """The reference is a library: scenarios call it (`fn`, `new` steps) through a shim that serves its functions
+    and classes (PHP: {shims}/library.php). `parityrun routes` then reads its API, not routes, and `port` gives the
+    port a shim of its own."""
     ignore_files: list[str] = dataclasses.field(default_factory=list)
     """Path patterns never recorded (fnmatch): logs, caches, sessions ("storage/logs/*", "*.log")."""
     random_files: set[str] = dataclasses.field(default_factory=set)

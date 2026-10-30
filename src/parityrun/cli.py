@@ -126,13 +126,22 @@ def _templates(project: Project) -> list[tuple[str, str]]:
 
 
 def covered(project: Project) -> set[str]:
-    """The endpoint templates ("GET /api/jobs/{id}") some scenario step calls."""
+    """The endpoint templates ("GET /api/jobs/{id}") and library parts ("fn Shop\\slug") some scenario step calls."""
+    from . import api
+
     templates = _templates(project)
+    keys = {f"{m} {p}" for m, p in templates}
     hit = set()
     for name in runner.all_scenarios(project):
+        objects: dict[str, str] = {}  # `as` name -> the class a `new` step made
         for step in runner.load(project, name)["steps"]:
             if step.get("sse") and project.events:  # the step also listens to the live events
                 hit.add(f"GET {project.events}")
+            if "fn" in step or "new" in step:  # a call into a library
+                part = api.key(step, objects)
+                if part in keys:
+                    hit.add(part)
+                continue
             if "call" not in step:  # a command-line step
                 continue
             method, path = step["call"].split(" ", 1)
@@ -151,7 +160,8 @@ def coverage(project: Project, quiet: bool = False) -> int:
         templates = _templates(project)
         hit = covered(project)
         missing = [f"{m} {p}" for m, p in templates if f"{m} {p}" not in hit]
-        print(f"Endpoint coverage: {len(hit)}/{len(templates)} ({100 * len(hit) / len(templates):.0f} %)"
+        what = "API coverage" if project.library else "Endpoint coverage"
+        print(f"{what}: {len(hit)}/{len(templates)} ({100 * len(hit) / len(templates):.0f} %)"
               if templates else "Endpoint coverage: golden/endpoints.json lists no routes")
         if not quiet:
             for e in missing:
@@ -227,6 +237,10 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     if args.cmd == "routes":
         return list_routes(project)
     if args.cmd == "capture":
+        if project.library:
+            print("A library has no pages to visit: write its calls in scenarios/*.yaml (fn: and new: steps; "
+                  "`parityrun routes` lists the API), then `parityrun record`.")
+            return 1
         from .capture import capture
         return capture(project, args.name, args.impl, args.port, open_browser=not args.no_browser)
     if args.cmd == "port":
@@ -243,6 +257,8 @@ def list_routes(project: Project) -> int:
     from .capture import _covered, write_endpoints
 
     impl = runner.Implementation(project, project.reference)
+    if project.library:
+        return list_api(project, impl.folder)
     found, notes = routes.scan(impl.folder)
     for note in notes:
         print(f"note: {note}")
@@ -256,6 +272,27 @@ def list_routes(project: Project) -> int:
         print(f"  {'x' if r.key in done else ' '} {r.key.ljust(width)}   {r.source}")
     print(f"\n{len(found)} routes, {len(done)} visited by the scenarios. Saved {path.relative_to(project.root.parent)}."
           f"\nVisit the rest with: parityrun capture")
+    return 0
+
+
+def list_api(project: Project, folder: pathlib.Path) -> int:
+    """A library's API read from its code into golden/endpoints.json, with which parts the scenarios call."""
+    from . import api
+
+    found, notes = api.scan(folder)
+    for note in notes:
+        print(f"note: {note}")
+    if not found:
+        return 1
+    path = project.golden / "endpoints.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([part.key for part in found], indent=1) + "\n", encoding="utf-8")
+    done = covered(project)
+    width = max(len(part.key + part.params) for part in found)
+    for part in found:
+        print(f"  {'x' if part.key in done else ' '} {(part.key + part.params).ljust(width)}   {part.source}")
+    print(f"\n{len(found)} functions, methods and classes, {len(done)} called by the scenarios. Saved "
+          f"{path.relative_to(project.root.parent)}.\nCall the rest from scenarios/*.yaml (fn: and new: steps).")
     return 0
 
 

@@ -1,0 +1,20 @@
+description: The library's functions, with the PHP habits a port must keep (number_format, strtolower, round).
+steps:
+- fn: Cart\format_eur
+  args: [123450]
+- fn: Cart\format_eur
+  args: [-1]
+- fn: Cart\format_eur
+  args: [5]
+- fn: Cart\slug
+  args: ["  Hello, World!  "]
+- fn: Cart\slug
+  args: ["Åsa's Öl & Bröd 2"]
+- fn: Cart\vat
+  args: [1250]
+- fn: Cart\vat
+  args: [-1, 0.5]
+- fn: Cart\vat
+  args: [1, 0.5]
+- fn: Cart\vat
+  args: {cents: 1000, rate: 0.1}

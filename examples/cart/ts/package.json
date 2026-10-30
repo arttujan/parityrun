@@ -1,0 +1,6 @@
+{
+  "name": "cart-ts",
+  "private": true,
+  "type": "module",
+  "description": "The cart library ported to TypeScript; its shim runs with node 23.6+ (type stripping): node shim.ts"
+}

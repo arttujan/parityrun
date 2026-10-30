@@ -1,0 +1,20 @@
+description: A cart filled, read, printed and emptied; the errors it throws.
+steps:
+- new: Cart\Cart
+  as: cart
+- fn: cart.add
+  args: [apple, 3, 45]
+- fn: cart.add
+  args: [pear, 1, 120]
+- fn: cart.add
+  args: [apple, 2, 45]
+- fn: cart.add
+  args: [plum, 0, 99]
+- fn: cart.total
+- fn: cart.lines
+- fn: cart.receipt
+- fn: cart.remove
+  args: [kiwi]
+- fn: cart.remove
+  args: [pear]
+- fn: cart.count

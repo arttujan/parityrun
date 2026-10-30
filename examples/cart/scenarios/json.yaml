@@ -1,0 +1,12 @@
+description: Carts read from JSON (a product code that looks like a number stays text) and made in another currency.
+steps:
+- fn: Cart\Cart::fromJson
+  args: ['{"currency": "SEK", "lines": {"123": {"qty": 2, "price": 1999}, "tea": {"qty": 1, "price": 350}}}']
+  as: saved
+- fn: saved.lines
+- fn: saved.total
+- fn: saved.receipt
+- fn: Cart\Cart::fromJson
+  args: ['{"lines": ']
+- new: Cart\Cart
+  args: [USD]

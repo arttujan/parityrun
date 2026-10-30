@@ -34,19 +34,18 @@ PREPEND = r"""<?php
     } else {
         return;
     }
-    register_shutdown_function(function () use ($dir, $tool) {
-        if ($tool === 'pcov') {
-            \pcov\stop();
-            $lines = \pcov\collect(\pcov\all);
-        } else {
-            $lines = xdebug_get_code_coverage();
-            xdebug_stop_code_coverage();
-        }
+    $file = $dir . '/' . str_replace('.', '', uniqid('', true)) . '.json';
+    $dump = function () use ($dir, $tool, $file) {  // the lines run so far, into this request's file
+        $lines = $tool === 'pcov' ? \pcov\collect(\pcov\all) : xdebug_get_code_coverage();
         if (!is_dir($dir)) {
             @mkdir($dir, 0777, true);
         }
-        file_put_contents($dir . '/' . str_replace('.', '', uniqid('', true)) . '.json',
-                          json_encode(['tool' => $tool, 'files' => $lines]));
+        file_put_contents($file, json_encode(['tool' => $tool, 'files' => $lines]));
+    };
+    $GLOBALS['parityrun_coverage_dump'] = $dump;  // a long-running script (the library shim) calls it as it goes
+    register_shutdown_function(function () use ($dump, $tool) {
+        $dump();
+        $tool === 'pcov' ? \pcov\stop() : xdebug_stop_code_coverage();
     });
 })();
 """

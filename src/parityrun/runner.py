@@ -29,6 +29,8 @@ from .project import Project, RunInfo
 from .stubs import Stub
 
 TEMPLATE = re.compile(r"\{\{\s*([\w.\[\]-]+)\s*\}\}")
+SHIMS = pathlib.Path(__file__).resolve().parent / "shims"
+"""What {shims} means in impls.json: parityrun's own shims, e.g. {shims}/library.php serves a PHP library."""
 IMAGE_SSIM = 0.98  # images must look the same; antialiasing may differ between drawing libraries
 
 
@@ -57,7 +59,8 @@ class Implementation:
         wait until its ready path answers 200 (or any status `accept` takes)."""
         project, repo = self.project, self.project.repo
         port = free_port()
-        cmd = _command([part.format(python=sys.executable, port=port, repo=repo) for part in self.spec["cmd"]])
+        cmd = _command([part.format(python=sys.executable, port=port, repo=repo, shims=SHIMS.as_posix())
+                        for part in self.spec["cmd"]])
         self.cwd = cwd or self.folder
         measure = {}
         if project.coverage and coverage.is_php(cmd):  # each request's lines, into <work>/coverage
@@ -69,7 +72,7 @@ class Implementation:
         self.info = info
         if project.setup:  # e.g. an outside database emptied, so every run starts the same
             project.setup(info)
-        own = {k: str(v).format(python=sys.executable, port=port, repo=repo)  # impls.json env: this one's own
+        own = {k: str(v).format(python=sys.executable, port=port, repo=repo, shims=SHIMS.as_posix())  # its own
                for k, v in self.spec.get("env", {}).items()}
         env = {**os.environ, "PARITYRUN_STUB": stub, **measure, **(project.env(info) if project.env else {}), **own,
                **{k: str(v).replace("{stub}", stub).replace("{python}", sys.executable).replace("{repo}", str(repo))
@@ -97,7 +100,8 @@ class Implementation:
         fails, None when it built (or has nothing to build)."""
         if "build" not in self.spec:
             return None
-        cmd = _command([part.format(python=sys.executable, repo=self.project.repo) for part in self.spec["build"]])
+        cmd = _command([part.format(python=sys.executable, repo=self.project.repo, shims=SHIMS.as_posix())
+                        for part in self.spec["build"]])
         try:
             proc = subprocess.run(cmd, cwd=self.folder, capture_output=True, timeout=1800)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -110,7 +114,8 @@ class Implementation:
         """One command-line run next to the running service (same data, same environment): exit code and output."""
         if "cli" not in self.spec:
             raise RuntimeError(f"{self.name} has no cli in impls.json")
-        cmd = _command([part.format(python=sys.executable, repo=self.project.repo) for part in self.spec["cli"]]) + args
+        cmd = _command([part.format(python=sys.executable, repo=self.project.repo, shims=SHIMS.as_posix())
+                        for part in self.spec["cli"]]) + args
         proc = subprocess.run(cmd, cwd=self.cwd, env={**self.env, "COLUMNS": "100"}, capture_output=True, timeout=900)
         text = lambda b: b.decode("utf-8", "replace").replace("\r\n", "\n")  # noqa: E731
         return {"exit": proc.returncode, "stdout": text(proc.stdout), "stderr": text(proc.stderr)}
@@ -254,6 +259,21 @@ def _request(client: httpx.Client, step: dict, ctx: dict, fixtures: pathlib.Path
         else client.request(method, path, headers=headers, follow_redirects=follow)
 
 
+def call_name(step: dict) -> str:
+    """A library step as its recording names it: "fn slug", "fn Cart::fromJson", "fn cart.add", "new Cart"."""
+    return f"new {step['new']}" if "new" in step else f"fn {step['fn']}"
+
+
+def _library_call(client: httpx.Client, step: dict, ctx: dict, where: str) -> dict:
+    """One `fn` or `new` step sent to the library's shim: {"value"} or {"error"}, with "output" if it printed."""
+    call = {key: render(step[key], ctx) if key == "args" else step[key]
+            for key in ("fn", "new", "args", "as") if key in step}
+    r = client.post("/call", json=call)
+    if r.status_code != 200 or not r.headers.get("content-type", "").startswith("application/json"):
+        raise RuntimeError(f"{where} ({call_name(step)}): the shim answered {r.status_code}: {r.text[:2000]}")
+    return r.json()
+
+
 def _capture(r: httpx.Response, captures: dict, kind: str, where: str) -> dict:
     """Values for later steps' templates: a regex's first group (or whole match) in the body, or in a header."""
     found = {}
@@ -357,6 +377,12 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
                 time.sleep(0.3)
             if "cli" in step:  # a command-line run instead of an HTTP call
                 entry = {"call": f"cli {step['cli']}", "cli": impl.cli(shlex.split(render(step["cli"], ctx)))}
+                _entry_calls(entry, stub)
+                steps.append(entry)
+                continue
+            if "fn" in step or "new" in step:  # a call into a library, through its shim
+                entry = {"call": call_name(step), "result": _library_call(client, step, ctx, f"{name} step {k}")}
+                ctx[step.get("id", f"step{k}")] = entry["result"]
                 _entry_calls(entry, stub)
                 steps.append(entry)
                 continue
@@ -464,8 +490,9 @@ def run(impl: Implementation, name: str, out: pathlib.Path, strict: bool = True)
         project.post_process(recording)
     for entry, step in zip(recording["steps"], scenario["steps"]):
         for pattern in (scenario.get("ignore") or []) + (step.get("ignore") or []):  # machine state, not code
-            if "json" in entry:
-                _blank(entry["json"], pattern.split("."))
+            for part in ("json", "result"):
+                if part in entry:
+                    _blank(entry[part], pattern.split("."))
         if step.get("unordered") and isinstance(entry.get("json"), list):  # e.g. a log parallel work shares
             entry["json"].sort(key=lambda x: json.dumps(x, sort_keys=True))
     for rel, path in images.items():  # keep the images under their normalised names
@@ -541,7 +568,7 @@ def checks(golden: dict, got: dict, golden_dir: pathlib.Path, got_dir: pathlib.P
             out.append({"name": f"step {k} {want['call']} {name}", "ok": score >= threshold,
                         "detail": [f"SSIM {score:.4f} (needs {threshold})"]})
         for part in ("status", "location", "redirects", "json", "text", "html", "disposition", "events", "video",
-                     "range", "cli"):
+                     "range", "cli", "result"):
             if part in want or part in have:
                 out.append({"name": f"step {k} {want['call']} {part}", "ok": want.get(part) == have.get(part),
                             "detail": differences(want.get(part), have.get(part))})
