@@ -2,12 +2,13 @@
 
 Prove that a rewrite of your app behaves exactly like the original. parityrun records what your app does (every
 page, form answer, redirect, database row and file it writes) and then checks a new version against that recording:
-a port from PHP to JavaScript, TypeScript or Rust, a framework upgrade, or simply the next release.
+a port from PHP to JavaScript, TypeScript or Rust, a framework upgrade, or simply the next release. With your own AI
+tool, it can do the port too, turn by turn, until the new version matches.
 
 ## Install
 
 ```
-pip install git+https://github.com/arttujan/parityrun@v0.3.0
+pip install git+https://github.com/arttujan/parityrun@v0.4.0
 ```
 
 Python 3.10 or newer, and whatever your app itself needs to run (for a PHP app: `php` on PATH).
@@ -37,6 +38,19 @@ When the new version is ready, tell parityrun how to start it in `parityrun/impl
 parityrun check --impl node      # every difference, and the parity %; exits 0 only at 100 %
 parityrun coverage               # the routes and lines of code no scenario has run yet
 ```
+
+## Let your AI tool port it
+
+```
+parityrun port --to typescript      # or javascript, rust
+```
+
+parityrun writes the new app's starting point beside yours (`../my-app-ts`), adds it to `impls.json` and gives your AI
+tool the task in `PORTING.md`. Then it goes turn by turn: the tool works, parityrun checks, and the differences of one
+scenario at a time become the next turn's task, until parity is 100 %. A scenario that stays red is reported, never
+hidden. By default the tool is [Claude Code](https://claude.com/claude-code) (`claude` on PATH, your own account);
+for another one, give its command: `--agent "yourtool --message-file {prompt_file}"`. The tool may not change your app
+or the recordings: parityrun puts its own folder back after every turn and stops if your app changes.
 
 ## What "the same" means
 

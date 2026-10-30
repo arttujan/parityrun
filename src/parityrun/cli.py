@@ -9,12 +9,16 @@ them, and list the endpoints the scenarios don't use yet.
   parityrun init [PATH] [--force] [--no-start]                     set parityrun up in an existing app's folder
   parityrun [--project FILE] routes                                read the app's routes from its code
   parityrun [--project FILE] capture [NAME] [--port 8000]          use the app in a browser; it becomes a scenario
+  parityrun [--project FILE] port --to typescript|javascript|rust [--agent claude|"CMD {prompt_file}"]
+                                                                   port the app with an AI tool until check passes
 
-FILE (default parityrun_project.py, else parityrun/parityrun_project.py) defines PROJECT = parityrun.Project(...).
+FILE (default $PARITYRUN_PROJECT, else parityrun_project.py, else parityrun/parityrun_project.py) defines
+PROJECT = parityrun.Project(...).
 """
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -25,6 +29,8 @@ from . import coverage as code_coverage
 from . import runner
 from .project import Project, load
 
+LANGUAGES = ("javascript", "typescript", "rust")
+
 
 def dump(recording: dict) -> str:
     """A recording as it is saved: stable key order, one space indents, UTF-8 kept readable."""
@@ -33,6 +39,10 @@ def dump(recording: dict) -> str:
 
 def record(project: Project, names: list[str], force: bool) -> int:
     impl = runner.Implementation(project, project.reference)
+    broken = impl.build()
+    if broken:
+        print(f"{impl.name}: the build failed:\n{broken}")
+        return 1
     failed = 0
     for name in names:
         dirs = [pathlib.Path(tempfile.mkdtemp(prefix=f"rec-{name}-")) for _ in range(2)]
@@ -61,6 +71,15 @@ def record(project: Project, names: list[str], force: bool) -> int:
 def check(project: Project, impl_name: str, names: list[str]) -> int:
     impl = runner.Implementation(project, impl_name)
     report, total, passed = {}, 0, 0
+    broken = impl.build()
+    if broken:  # nothing to run: every scenario fails
+        print(f"{impl_name}: the build failed:\n{broken}")
+        project.out.mkdir(exist_ok=True)
+        (project.out / f"report-{impl_name}.json").write_text(json.dumps(
+            {"build": [{"name": "build", "ok": False, "detail": broken.splitlines()[-40:]}]}, indent=1),
+            encoding="utf-8")
+        print(f"\n{impl_name}: parity 0.0 % (the build failed)")
+        return 1
     for name in names:
         golden_dir = project.golden / name
         if not (golden_dir / "recording.json").exists():
@@ -71,6 +90,7 @@ def check(project: Project, impl_name: str, names: list[str]) -> int:
         try:
             got = runner.run(impl, name, out, strict=False)
             results = runner.checks(golden, got, golden_dir, out, project)
+            (out / "recording.json").write_text(dump(got), encoding="utf-8", newline="\n")  # to set beside golden's
         except Exception as exc:  # noqa: BLE001 - a crash fails every comparison of the scenario
             # Count them all, so the parity percentage always has the same denominator (the golden comparisons).
             expected = runner.checks(golden, golden, golden_dir, golden_dir, project)
@@ -85,7 +105,7 @@ def check(project: Project, impl_name: str, names: list[str]) -> int:
                 print(f"  FAIL {r['name']}")
                 for line in r["detail"][:4]:
                     print(f"       {line}")
-        kept = project.out / impl_name / name  # its images and frames, to look at next to golden/<name>
+        kept = project.out / impl_name / name  # its recording, images and frames, to look at next to golden/<name>
         shutil.rmtree(kept, ignore_errors=True)
         shutil.copytree(out, kept)
         shutil.rmtree(out, ignore_errors=True)
@@ -152,8 +172,9 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog=project.prog if project else "parityrun")
     if project is None:
-        parser.add_argument("--project", default="parityrun_project.py",
-                            help="the file that defines PROJECT (default: parityrun_project.py)")
+        parser.add_argument("--project", default=os.environ.get("PARITYRUN_PROJECT") or "parityrun_project.py",
+                            help="the file that defines PROJECT (default: $PARITYRUN_PROJECT, else "
+                                 "parityrun_project.py)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     rec = sub.add_parser("record", help="new golden recordings from the reference implementation")
     rec.add_argument("scenarios", nargs="*")
@@ -174,6 +195,19 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     cap.add_argument("--port", type=int, default=8000, help="where the browser opens the app (default: 8000)")
     cap.add_argument("--impl", help="the implementation in impls.json (default: the reference)")
     cap.add_argument("--no-browser", action="store_true", help="don't open the browser")
+    tr = sub.add_parser("port", help="port the app to another language with your AI tool, turn by turn, until check "
+                                     "passes")
+    tr.add_argument("--to", required=True, choices=sorted(LANGUAGES), help="the language of the port")
+    tr.add_argument("--into", help="the port's folder (default: beside the app, <app>-ts, -js or -rs)")
+    tr.add_argument("--name", help="its name in impls.json (default: ts, js or rust)")
+    tr.add_argument("--agent", default="claude",
+                    help="claude (Claude Code, the default) or your own tool's command line, with {prompt_file}")
+    tr.add_argument("--turns", type=int, default=20, help="at most this many agent turns (default: 20)")
+    tr.add_argument("--patience", type=int, default=3,
+                    help="turns a scenario may stay red without getting better before it is set aside (default: 3)")
+    tr.add_argument("--turn-minutes", type=float, default=60, help="the longest one agent turn may take (default: 60)")
+    tr.add_argument("--setup-only", action="store_true",
+                    help="write the port's folder, its impls.json entry and PORTING.md; start no agent")
     args = parser.parse_args(argv)
     if args.cmd == "init":
         from .init import init
@@ -181,6 +215,7 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     if project is None and args.project == "parityrun_project.py" and not pathlib.Path(args.project).exists() \
             and pathlib.Path("parityrun", "parityrun_project.py").exists():  # what `init` wrote, from the app's folder
         args.project = str(pathlib.Path("parityrun", "parityrun_project.py"))
+    source = None if project else pathlib.Path(args.project).resolve()  # what `port` lets the agent check with
     project = project or load(args.project)
     if args.cmd == "record":
         return record(project, args.scenarios or runner.all_scenarios(project), args.force)
@@ -194,6 +229,11 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     if args.cmd == "capture":
         from .capture import capture
         return capture(project, args.name, args.impl, args.port, open_browser=not args.no_browser)
+    if args.cmd == "port":
+        from .port import port
+        return port(project, args.to, into=args.into, name=args.name, agent=args.agent, turns=args.turns,
+                    patience=args.patience, turn_minutes=args.turn_minutes, setup_only=args.setup_only,
+                    project_file=source)
     return coverage(project)
 
 

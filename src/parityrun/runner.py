@@ -69,7 +69,9 @@ class Implementation:
         self.info = info
         if project.setup:  # e.g. an outside database emptied, so every run starts the same
             project.setup(info)
-        env = {**os.environ, "PARITYRUN_STUB": stub, **measure, **(project.env(info) if project.env else {}),
+        own = {k: str(v).format(python=sys.executable, port=port, repo=repo)  # impls.json env: this one's own
+               for k, v in self.spec.get("env", {}).items()}
+        env = {**os.environ, "PARITYRUN_STUB": stub, **measure, **(project.env(info) if project.env else {}), **own,
                **{k: str(v).replace("{stub}", stub).replace("{python}", sys.executable).replace("{repo}", str(repo))
                   .replace("{data}", data_dir.as_posix()) for k, v in (extra or {}).items()}}
         self.env = env
@@ -90,6 +92,20 @@ class Implementation:
         proc.kill()
         raise RuntimeError(f"{self.name} didn't answer in {project.ready_timeout:g} s; see {log}")
 
+    def build(self) -> str | None:
+        """Run impls.json `build` (e.g. cargo build --release) in the implementation's folder; its output when it
+        fails, None when it built (or has nothing to build)."""
+        if "build" not in self.spec:
+            return None
+        cmd = _command([part.format(python=sys.executable, repo=self.project.repo) for part in self.spec["build"]])
+        try:
+            proc = subprocess.run(cmd, cwd=self.folder, capture_output=True, timeout=1800)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return f"{' '.join(cmd)}: {exc}"
+        if proc.returncode == 0:
+            return None
+        return (proc.stdout + proc.stderr).decode("utf-8", "replace").replace("\r\n", "\n")[-6000:]
+
     def cli(self, args: list[str]) -> dict:
         """One command-line run next to the running service (same data, same environment): exit code and output."""
         if "cli" not in self.spec:
@@ -108,9 +124,10 @@ def _command(cmd: list[str]) -> list[str]:
 
 
 def copy_app(impl: Implementation, target: pathlib.Path) -> dict[str, tuple[int, int]]:
-    """The implementation's folder copied to `target` for one run (Project.isolate), without .git and the like or the
-    parityrun project folder; returns each file's (size, mtime) to tell later what the run changed."""
-    skip, root = set(impl.project.isolate_skip), impl.project.root.resolve()
+    """The implementation's folder copied to `target` for one run (Project.isolate), without .git and the like (and
+    impls.json `skip`, e.g. Rust's target/) or the parityrun project folder; returns each file's (size, mtime) to
+    tell later what the run changed."""
+    skip, root = set(impl.project.isolate_skip) | set(impl.spec.get("skip", [])), impl.project.root.resolve()
     ignore = lambda folder, names: [n for n in names  # noqa: E731
                                     if n in skip or pathlib.Path(folder, n).resolve() == root]
     shutil.copytree(impl.folder, target, ignore=ignore, symlinks=True)

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parityrun"
-version = "0.3.0"
-description = "Prove a rewrite of your app behaves exactly like the original: record it, capture every route, check the new version"
+version = "0.4.0"
+description = "Port your app to another language with your AI tool, and prove the port behaves exactly like the original"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

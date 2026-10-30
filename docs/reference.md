@@ -5,6 +5,7 @@ scenario key and every command.
 
 - [What is compared](#what-is-compared)
 - [Starting from an existing app](#starting-from-an-existing-app): `init`, `capture`, `routes`, code coverage
+- [Porting with an AI tool](#porting-with-an-ai-tool): `port`
 - [A project](#a-project): the files, `impls.json`, `parityrun_project.py` and its settings
 - [Databases](#databases)
 - [Scenarios](#scenarios)
@@ -77,6 +78,51 @@ before and says so once.
 What parity means, then: identical on the recorded scenarios, which visit that many routes and run that share of the
 code. A path no scenario takes is not proven.
 
+## Porting with an AI tool
+
+```
+parityrun port --to typescript|javascript|rust [--into FOLDER] [--name NAME] [--agent claude|"COMMAND"]
+               [--turns 20] [--patience 3] [--turn-minutes 60] [--setup-only]
+```
+
+Record first: the recordings are what the port is held to. `port` then
+
+1. writes the port's starting point, an app that runs and answers 501 everywhere, in `--into` (default: beside the
+   app, `<app>-ts`, `<app>-js` or `<app>-rs`). JavaScript is `server.js` (CommonJS), TypeScript is `server.ts` run by
+   node 23.6 or newer as it is (type stripping, no build), Rust is a Cargo package of its own, built with
+   `cargo build --release`. A file that exists is never written over, so `port` goes on from what is there;
+2. adds the port to `impls.json` (default name `js`, `ts` or `rust`), with its port in `PORT`;
+3. writes `PORTING.md` in the port's folder, the task: how the port is started, the environment every run gives it
+   (from your `env()`, with sample values), what is compared, every scenario with its recording, how to check, and
+   the rules;
+4. loops. Each turn runs your AI tool in the port's folder. The first turn ports the whole app; then parityrun builds
+   the port, sees that it starts, runs `check`, and the next turn gets the failing checks of one red scenario
+   (`path: expected != yours`, with the paths of the scenario, its recording and the port's own recording in
+   `out/<name>/<scenario>/recording.json`). A crash comes with the port's own output; a build that fails, with the
+   compiler's.
+
+It stops at 100 % parity (exit 0), after `--turns` turns, or when every red scenario has been worked on for
+`--patience` turns without getting better, or the port hasn't built or started for that many turns (exit 1: what is
+still red is printed). Run the same command again to go on.
+
+**The AI tool.** `--agent claude` (the default) runs [Claude Code](https://claude.com/claude-code) as
+`claude -p --permission-mode acceptEdits` with the task on stdin: it may read the app and the parityrun folder
+(`--add-dir`), edit files in the port's folder and run `parityrun check`, `node`/`npm` or `cargo`, nothing else.
+It uses your own Claude Code login and plan. Any other tool: give its command line, with `{prompt_file}` (the turn's
+task as a file) and `{folder}` (the port's folder) filled in; it runs in the port's folder and gets the task on stdin
+too (write paths in the command with forward slashes). `PARITYRUN_PROJECT` points the tool's own `parityrun check` at
+the project.
+
+**What the tool may not change.** The parityrun folder (scenarios, recordings, fixtures, settings) is kept aside and
+put back after every turn; the next turn is told what was put back. The original app's files are watched: when one
+changes, `port` stops (exit 2), as the recordings may no longer be the original's.
+
+**What is kept.** Each turn's task and the tool's output are in `out/port/turn-<n>.prompt.md` and `turn-<n>.log`; each
+turn's result (parity, every scenario's passing checks, the time the tool took) is a line of `out/port-log.jsonl`.
+
+`--setup-only` writes the folder, the `impls.json` entry and `PORTING.md` and stops, for porting by hand or in your
+own tool's chat: `parityrun check --impl ts` checks the port at any time.
+
 ## A project
 
 A project folder (`parityrun/` after `init`) holds:
@@ -92,11 +138,15 @@ golden/endpoints.json   every route, for `coverage` and `capture`
 
 `impls.json`: a working directory (relative to `repo`), a command with `{port}`, `{repo}` and `{python}` filled in,
 and optionally a `cli` command for command-line steps. A program named without a path is looked up on PATH.
+Optionally too: `env`, environment values for this implementation only (`{port}`, `{repo}`, `{python}` filled in, on
+top of the project's `env()`); `build`, a command run in its folder before `record` or `check` (a failed build is
+0 % parity, with the compiler's output); `skip`, names not copied into an isolated run's copy (`target` for Rust).
 
 ```json
 {"php":  {"cmd": ["php", "-S", "127.0.0.1:{port}", "-t", "public"]},
- "node": {"cwd": "../port-js", "cmd": ["node", "server.js"]},
- "rust": {"cwd": "rust", "cmd": ["{repo}/target/release/notes", "--port", "{port}"], "cli": ["{repo}/target/release/notes"]}}
+ "node": {"cwd": "../port-js", "cmd": ["node", "server.js"], "env": {"PORT": "{port}"}},
+ "rust": {"cwd": "rust", "cmd": ["{repo}/rust/target/release/notes", "--port", "{port}"],
+          "build": ["cargo", "build", "--release"], "skip": ["target"], "cli": ["{repo}/rust/target/release/notes"]}}
 ```
 
 `parityrun_project.py`:
@@ -239,13 +289,18 @@ parityrun routes                           read the reference's routes from its 
 parityrun record [scenario ...]            run the reference twice per scenario, save golden/<name>/
 parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
                                            compare; prints each failing comparison and the parity %, writes
-                                           out/report-<impl>.json and keeps the run's pictures in out/<impl>/<name>/
+                                           out/report-<impl>.json, keeps the run in out/<impl>/<name>/
 parityrun coverage                         the routes no scenario calls, and the PHP lines no scenario ran
+parityrun port --to typescript|javascript|rust [--agent claude|"COMMAND"] [--into FOLDER] [--name NAME]
+               [--turns 20] [--patience 3] [--turn-minutes 60] [--setup-only]
+                                           port the app with your AI tool until check passes; logs out/port-log.jsonl
 ```
 
-Every command takes `--project FILE` first; without it, `parityrun_project.py` here or `parityrun/parityrun_project.py`.
-`check` exits 0 only when every comparison passes. Review the diff of `golden/` before committing a new recording:
-from then on a recording is only as right as the run that made it.
+Every command takes `--project FILE` first; without it, `$PARITYRUN_PROJECT`, else `parityrun_project.py` here or
+`parityrun/parityrun_project.py`. `check` exits 0 only when every comparison passes, and keeps what the
+implementation did as `out/<impl>/<name>/recording.json` (with its pictures), to set beside
+`golden/<name>/recording.json`. Review the diff of `golden/` before committing a new recording: from then on a
+recording is only as right as the run that made it.
 
 ## Examples
 
