@@ -156,8 +156,8 @@ def test_guard_puts_the_parityrun_folder_back_and_sees_the_original_change(tmp_p
     golden.write_text("{}", encoding="utf-8")
     (project.scenarios / "a.yaml").unlink()
     (project.scenarios / "new.yaml").write_text("steps: []\n", encoding="utf-8")
-    (project.root / "__pycache__").mkdir()
-    (project.root / "__pycache__" / "p.pyc").write_bytes(b"")  # loading the project file may leave this
+    (project.root / "__pycache__").mkdir(exist_ok=True)  # loading the project file may have made it already
+    (project.root / "__pycache__" / "p.pyc").write_bytes(b"")
     (project.out / "ts").mkdir(parents=True)
     (project.out / "ts" / "recording.json").write_text("{}", encoding="utf-8")  # what check writes
     assert guard.restore() == ["golden/a/recording.json", "scenarios/a.yaml", "scenarios/new.yaml"]
