@@ -120,3 +120,25 @@ def test_the_php_shim_measures_the_lines_the_calls_ran(tmp_path):
     lines = (CART / "php" / "src" / "Cart.php").read_text(encoding="utf-8").splitlines()
     throw = next(n for n, line in enumerate(lines, 1) if "InvalidArgumentException" in line)
     assert throw not in files.get("src/Cart.php", {}).get("run", [])  # loaded, but no call ran Cart's code
+
+
+def test_init_sets_up_a_php_library_that_then_records_and_checks(tmp_path, capsys):
+    """Only the library's own files: init finds the shim's settings and the API; one scenario's calls written."""
+    _needs("php")
+    app = tmp_path / "cart"
+    shutil.copytree(CART / "php", app)
+    assert cli.main(["init", str(app)]) == 0
+    said = capsys.readouterr().out
+    assert "Found: PHP library" in said and "The library loads" in said
+    calls = app / "parityrun" / "scenarios" / "calls.yaml"
+    calls.write_text(calls.read_text(encoding="utf-8").replace("steps: []\n", (CART / "scenarios" / "cart.yaml")
+                                                               .read_text(encoding="utf-8").split("\n", 1)[1]),
+                     encoding="utf-8")
+    project = str(app / "parityrun" / "parityrun_project.py")
+    assert cli.main(["--project", project, "record"]) == 0
+    recording = json.loads((app / "parityrun" / "golden" / "calls" / "recording.json").read_text(encoding="utf-8"))
+    assert recording["steps"][5] == {"call": "fn cart.total", "result": {"value": 345}}
+    assert cli.main(["--project", project, "check"]) == 0
+    assert cli.main(["--project", project, "routes"]) == 0
+    assert "11 functions, methods and classes, 7 called by the scenarios" in capsys.readouterr().out
+    assert sorted(p.name for p in app.iterdir()) == ["parityrun", "src"]  # the library's folder is left as it was

@@ -4,6 +4,8 @@ It tells the stack from the files (PHP and its frameworks, node, Python, Rust), 
 copy to see that it runs and what its home page links to, and writes parityrun/ beside the code: impls.json (how to
 start the app), parityrun_project.py (settings, with notes on what it couldn't decide) and scenarios/smoke.yaml
 (the home page and the pages it links to, with any form token captured). The app's own files are never changed.
+A PHP library (no pages: composer.json says "type": "library", or there is no index.php) is served by parityrun's
+library shim instead, its API read from the code, and its first scenario is scenarios/calls.yaml.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from html.parser import HTMLParser
 import httpx
 import yaml
 
-from . import routes, runner
+from . import api, routes, runner
 from .project import Project, RunInfo
 from .stubs import Stub
 
@@ -30,6 +32,8 @@ TOKEN = re.compile(r"csrf|xsrf|token|nonce|authenticity", re.I)
 RISKY = re.compile(r"log-?out|sign-?out|delete|remove|destroy|reset|uninstall|unsubscribe", re.I)
 ASSET = re.compile(r"\.(css|js|mjs|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|pdf|zip|gz|mp4|mp3)$", re.I)
 MAX_LINKS = 10
+OWN_ENV = {"PARITYRUN_LIB"}
+"""Environment values only the reference gets (impls.json env), not every implementation (the project's env)."""
 
 
 @dataclasses.dataclass
@@ -47,6 +51,10 @@ class Stack:
     notes: list[str] = dataclasses.field(default_factory=list)
     tool: str = ""
     """The program that must be on PATH."""
+    library: bool = False
+    """A library: no pages, its functions and classes called through parityrun's shim."""
+    api: list = dataclasses.field(default_factory=list)
+    """A library's API (parityrun.api.Part), read from its code."""
 
 
 def _dotenv(app: pathlib.Path) -> dict[str, str]:
@@ -96,10 +104,47 @@ def _databases(app: pathlib.Path, stack: Stack) -> None:
                                f"({', '.join(found[1:])}) are compared as files.")
 
 
+def _composer(app: pathlib.Path) -> dict:
+    try:
+        return json.loads((app / "composer.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _php_library(app: pathlib.Path) -> Stack | None:
+    """A PHP library: composer.json says so, or there is no page (index.php) and no framework to serve one."""
+    composer = _composer(app)
+    pages = (app / "index.php").exists() or any((app / d / "index.php").exists() for d in DOCROOTS) or any(
+        (app / f).exists() for f in ("artisan", "wp-config.php", "wp-load.php", "bin/console"))
+    if composer.get("type") != "library" and pages:
+        return None
+    parts, notes = api.scan(app)
+    if not parts and composer.get("type") != "library":
+        return None
+    autoload = (app / "composer.json").exists()
+    function_files = sorted({p.source.split(":")[0] for p in parts if p.key.startswith("fn ")
+                             and "::" not in p.key and "->" not in p.key})
+    files = (["vendor/autoload.php"] + function_files) if autoload else \
+        sorted({p.source.split(":")[0] for p in parts})
+    stack = Stack("php", "PHP library", ["php", "{shims}/library.php"],
+                  env={"PORT": "{port}", "PARITYRUN_LIB": ",".join(dict.fromkeys(files))}, tool="php", library=True,
+                  api=parts)
+    stack.notes += notes
+    if autoload and not (app / "vendor" / "autoload.php").exists():
+        stack.notes.append("vendor/ is missing: run `composer install` in the library's folder first.")
+    if not autoload and len(files) > 1:
+        stack.notes.append("The library's files are loaded in name order (impls.json PARITYRUN_LIB): put one that "
+                           "another needs first if it doesn't load.")
+    return stack
+
+
 def _php(app: pathlib.Path) -> Stack | None:
-    if not ((app / "composer.json").exists() or any(app.glob("*.php"))
+    if not ((app / "composer.json").exists() or any(app.glob("*.php")) or any(app.glob("src/**/*.php"))
             or any((app / d / "index.php").exists() for d in DOCROOTS)):
         return None
+    library = _php_library(app)
+    if library:
+        return library
     root = next((d for d in DOCROOTS if (app / d / "index.php").exists()), ".")
     # no router script: PHP's built-in server serves real files and sends every other path to index.php
     stack = Stack("php", "PHP", ["php", "-S", "127.0.0.1:{port}", "-t", root], tool="php")
@@ -232,12 +277,14 @@ def _env(stack: Stack, run: RunInfo) -> dict:
 
 
 def probe(app: pathlib.Path, stack: Stack) -> dict:
-    """Start the app once in a throwaway copy and read its home page: {status, ready, links, tokens} or {error}."""
+    """Start the app once in a throwaway copy and read its home page (a library: see its shim answer):
+    {status, ready, links, tokens} or {error}."""
     work = pathlib.Path(tempfile.mkdtemp(prefix="parityrun-init-"))
     try:
         (work / "impls.json").write_text(json.dumps({stack.name: {"cmd": stack.cmd}}), encoding="utf-8")
         project = Project(root=work, repo=app, reference=stack.name, env=lambda run: _env(stack, run), isolate=True,
-                          ready_timeout=stack.ready_timeout, isolate_skip=[".git", ".hg", ".svn", FOLDER])
+                          ready_timeout=stack.ready_timeout, isolate_skip=[".git", ".hg", ".svn", FOLDER],
+                          ready="/health" if stack.library else "/")
         impl = runner.Implementation(project, stack.name)
         (work / "data").mkdir()
         runner.copy_app(impl, work / "app")
@@ -249,6 +296,11 @@ def probe(app: pathlib.Path, stack: Stack) -> dict:
             log = (work / "service.log").read_text(encoding="utf-8", errors="replace")[-2000:]
             stub.close()
             return {"error": f"the app didn't start ({' '.join(stack.cmd)}); its output:\n{log}"}
+        if stack.library:  # the shim answered: the library's files loaded
+            proc.kill()
+            proc.wait()
+            stub.close()
+            return {"status": 200, "ready": "/health", "links": [], "tokens": []}
         try:
             r = httpx.get(f"{base}/", follow_redirects=True, timeout=60)
             links, tokens = page_parts(r.text, str(r.url)) if "html" in r.headers.get("content-type", "") else ([], [])
@@ -275,9 +327,33 @@ def smoke(found: dict) -> dict:
             "steps": [first] + [{"call": f"GET {link}", "follow": True} for link in found.get("links", [])]}
 
 
+LIBRARY_SCENARIO = """\
+# Made by parityrun init: calls into the library, each recorded with what it returns, prints and throws.
+# Add the calls people make, with real arguments:
+#   - fn: Shop\\slug                       a function (or Shop\\Cart::fromJson, a static method)
+#     args: ["Hello World"]               a list, or named: {text: "Hello World"}
+#   - new: Shop\\Cart                      an object, kept as `cart` for the steps after it
+#     as: cart
+#   - fn: cart.add                        a method on it
+#     args: [apple, 2]
+# The library's API, as read from its code ("parityrun routes" lists it again):
+"""
+
+
+def library_scenario(parts: list) -> str:
+    """The first scenario of a library: the calls that need no argument, and its API listed above them."""
+    api_lines = "".join(f"#   {p.key}{p.params}\n" for p in parts[:60])
+    more = f"#   ... {len(parts) - 60} more\n" if len(parts) > 60 else ""
+    steps = [{"fn": p.key[3:]} for p in parts if p.key.startswith("fn ") and "->" not in p.key and not p.required]
+    body = yaml.safe_dump({"steps": steps[:10]}, sort_keys=False, allow_unicode=True, width=1000) if steps \
+        else "steps: []\n"
+    return LIBRARY_SCENARIO + api_lines + more + body
+
+
 def project_file(stack: Stack, ready: str) -> str:
     q = lambda value: json.dumps(value, ensure_ascii=False)  # noqa: E731 - a JSON string or list is Python too
-    values = {"PORT": "{port}", **stack.env}  # every implementation, the ports added later too, gets its port
+    values = {"PORT": "{port}", **{k: v for k, v in stack.env.items() if k not in OWN_ENV}}  # every implementation,
+    # the ports added later too, gets its port
     env = ", ".join(f"{q(k)}: " + ("str(run.port)" if v == "{port}" else
                                    f"{q(v)}.replace(\"{{port}}\", str(run.port))" if "{port}" in v else q(v))
                     for k, v in values.items())
@@ -285,6 +361,9 @@ def project_file(stack: Stack, ready: str) -> str:
                     for i, line in enumerate(_wrap(note)))
     settings = [f"    reference={q(stack.name)},", '    quick=["smoke"],', "    env=env,", f"    ready={q(ready)},",
                 f"    ready_timeout={stack.ready_timeout:g},", "    html=True,", "    redirects=True,", "    isolate=True,"]
+    if stack.library:
+        settings = [f"    reference={q(stack.name)},", "    env=env,", "    library=True,", '    ready="/health",',
+                    "    isolate=True,"]
     if stack.databases:
         settings.append(f"    databases={q(stack.databases)},")
     if stack.ignore_files:
@@ -331,24 +410,38 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> in
     if found.get("status") and found["status"] != 200:
         stack.notes.append(f"The home page answers {found['status']}: set ready= to a path that answers 200.")
     (folder / "scenarios").mkdir(parents=True, exist_ok=True)
-    (folder / "impls.json").write_text(json.dumps({stack.name: {"cmd": stack.cmd}}, indent=2) + "\n",
-                                       encoding="utf-8")
+    own = {k: v for k, v in stack.env.items() if k in OWN_ENV}  # the reference's alone, not the ports' contract
+    (folder / "impls.json").write_text(json.dumps({stack.name: {"cmd": stack.cmd, **({"env": own} if own else {})}},
+                                                  indent=2) + "\n", encoding="utf-8")
     (folder / "parityrun_project.py").write_text(project_file(stack, found.get("ready") or "/"), encoding="utf-8")
-    (folder / "scenarios" / "smoke.yaml").write_text(
+    first = "calls.yaml" if stack.library else "smoke.yaml"
+    (folder / "scenarios" / first).write_text(
+        library_scenario(stack.api) if stack.library else
         yaml.safe_dump(smoke(found), sort_keys=False, allow_unicode=True, width=1000), encoding="utf-8")
     (folder / ".gitignore").write_text("out/\n", encoding="utf-8")
-    found_routes, route_notes = routes.scan(app, use_framework=check_start)
-    stack.notes += route_notes
+    if stack.library:
+        keys = [p.key for p in stack.api]
+    else:
+        found_routes, route_notes = routes.scan(app, use_framework=check_start)
+        stack.notes += route_notes
+        keys = [r.key for r in found_routes]
     (folder / "golden").mkdir(exist_ok=True)
-    (folder / "golden" / "endpoints.json").write_text(json.dumps([r.key for r in found_routes], indent=1) + "\n",
-                                                      encoding="utf-8")
-    print(f"Wrote {folder.relative_to(app.parent)}/: impls.json, parityrun_project.py, scenarios/smoke.yaml, "
-          f"golden/endpoints.json ({len(found_routes)} routes found in the code)")
+    (folder / "golden" / "endpoints.json").write_text(json.dumps(keys, indent=1) + "\n", encoding="utf-8")
+    print(f"Wrote {folder.relative_to(app.parent)}/: impls.json, parityrun_project.py, scenarios/{first}, "
+          f"golden/endpoints.json ({len(keys)} {'functions, methods and classes' if stack.library else 'routes'} "
+          "found in the code)")
     for note in stack.notes:
         print(f"  note: {note}")
     if "error" in found:
         print(f"\nNot ready yet: {found['error']}")
         return 1
+    if stack.library:
+        if check_start:
+            print("The library loads: parityrun's shim serves it.")
+        print("\nNext:\n  edit scenarios/calls.yaml   the calls people make, with real arguments (the API is listed "
+              "at its top)\n  parityrun record            record what the library returns, prints and throws\n"
+              "  git add parityrun           keep the settings and recordings with the code")
+        return 0
     if check_start:
         pages = len(found.get("links", []))
         tokens = f", form tokens captured: {', '.join(found['tokens'])}" if found.get("tokens") else ""

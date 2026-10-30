@@ -9,8 +9,10 @@ import pathlib
 import re
 
 import pytest
+import yaml
 
-from parityrun import Project, api, cli, load, runner
+from parityrun import Project, RunInfo, api, cli, load, runner
+from parityrun import init
 
 CART = pathlib.Path(__file__).resolve().parents[1] / "examples" / "cart"
 
@@ -233,3 +235,49 @@ def test_the_examples_shims_are_the_templates_with_the_tables_filled_in(example,
 def _protocol_lines(text: str) -> list[str]:
     """The header comment's lines that describe the protocol."""
     return [line for line in text.splitlines()[:8] if re.match(r"//\s+(POST|GET|\{|->)", line)]
+
+
+def _files(root: pathlib.Path, files: dict) -> pathlib.Path:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    return root
+
+
+MONEY = {"src/Money.php": "<?php\nnamespace Pay;\nclass Money { public function __construct(int $cents) {} }\n",
+         "src/functions.php": "<?php\nnamespace Pay;\nfunction zero(): int { return 0; }\n"
+                              "function cents(string $text): int { return 0; }\n"}
+
+
+def test_init_tells_a_php_library_from_a_site(tmp_path):
+    lib = init.detect(_files(tmp_path / "lib", {**MONEY, "composer.json": '{"type": "library"}'}))
+    assert (lib.label, lib.library, lib.cmd) == ("PHP library", True, ["php", "{shims}/library.php"])
+    assert lib.env["PARITYRUN_LIB"] == "vendor/autoload.php,src/functions.php"  # functions aren't autoloaded
+    assert any("composer install" in note for note in lib.notes)
+    plain = init.detect(_files(tmp_path / "plain", MONEY))  # no composer.json, no page
+    assert plain.library and plain.env["PARITYRUN_LIB"] == "src/Money.php,src/functions.php"
+    assert any("name order" in note for note in plain.notes)
+    site = init.detect(_files(tmp_path / "site", {**MONEY, "index.php": "<?php echo 1;"}))
+    assert not site.library and site.cmd[:2] == ["php", "-S"]
+
+
+def test_init_writes_a_library_project_with_its_api_and_first_calls(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(init.shutil, "which", lambda tool: f"/usr/bin/{tool}")
+    app = _files(tmp_path / "lib", MONEY)
+    assert init.init(app, check_start=False) == 0
+    said = capsys.readouterr().out
+    assert "Found: PHP library" in said and "3 functions, methods and classes found" in said
+    assert "edit scenarios/calls.yaml" in said
+    folder = app / "parityrun"
+    impls = json.loads((folder / "impls.json").read_text(encoding="utf-8"))
+    assert impls == {"php": {"cmd": ["php", "{shims}/library.php"],
+                             "env": {"PARITYRUN_LIB": "src/Money.php,src/functions.php"}}}
+    project = load(folder / "parityrun_project.py")
+    assert project.library and project.ready == "/health" and project.coverage and project.isolate
+    sample = RunInfo(data_dir=tmp_path, work=tmp_path, port=5, stub_url="", repo=app)
+    assert project.env(sample) == {"PORT": "5"}  # the files to load are the reference's own, not the contract
+    calls = (folder / "scenarios" / "calls.yaml").read_text(encoding="utf-8")
+    assert "#   fn Pay\\cents(string $text)\n" in calls
+    assert yaml.safe_load(calls) == {"steps": [{"fn": "Pay\\zero"}]}  # the calls that need no argument
+    assert json.loads((folder / "golden" / "endpoints.json").read_text(encoding="utf-8")) == [
+        "new Pay\\Money", "fn Pay\\zero", "fn Pay\\cents"]
