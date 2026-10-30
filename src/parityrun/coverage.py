@@ -35,8 +35,14 @@ PREPEND = r"""<?php
         return;
     }
     $file = $dir . '/' . str_replace('.', '', uniqid('', true)) . '.json';
-    $dump = function () use ($dir, $tool, $file) {  // the lines run so far, into this request's file
-        $lines = $tool === 'pcov' ? \pcov\collect(\pcov\all) : xdebug_get_code_coverage();
+    $lines = [];
+    $dump = function () use ($dir, $tool, $file, &$lines) {  // the lines run so far, into this request's file
+        // \pcov\collect hands each line out once, so what every collect gave is kept: a line run once stays run
+        foreach ($tool === 'pcov' ? \pcov\collect(\pcov\all) : xdebug_get_code_coverage() as $path => $found) {
+            foreach ($found as $line => $code) {
+                $lines[$path][$line] = max($lines[$path][$line] ?? $code, $code);
+            }
+        }
         if (!is_dir($dir)) {
             @mkdir($dir, 0777, true);
         }

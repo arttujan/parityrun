@@ -71,7 +71,7 @@ def test_the_php_library_records_what_it_returns_prints_and_throws(php_library):
 
     cart = _results(php_library, "cart")
     assert cart[0] == {"value": {"$object": "Cart\\Cart", "currency": "EUR"}}
-    assert [r["value"] for r in cart[1:4]] == [3, 4, 5]
+    assert [r["value"] for r in cart[1:4]] == [3, 4, 6]  # items in the cart: 3 apples, a pear, 2 apples more
     assert cart[4] == {"error": {"class": "InvalidArgumentException", "message": "Quantity must be positive, got 0"}}
     assert cart[5] == {"value": 345}
     assert cart[6] == {"value": [{"sku": "apple", "qty": 5, "price": 45}, {"sku": "pear", "qty": 1, "price": 120}]}

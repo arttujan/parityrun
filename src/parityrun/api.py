@@ -117,7 +117,7 @@ def php(text: str, rel: str) -> list[Part]:
 def scan(root: pathlib.Path) -> tuple[list[Part], list[str]]:
     """The API of the PHP library in `root` (not vendor/, tests/ and the like), and notes on what wasn't found."""
     found: list[Part] = []
-    for path in sorted(root.rglob("*.php")):
+    for path in sorted(root.rglob("*.php"), key=lambda p: p.relative_to(root).as_posix()):  # one order on every OS
         rel = path.relative_to(root).as_posix()
         if path.is_file() and not set(rel.split("/")[:-1]) & SKIP_DIRS:
             found += php(path.read_text(encoding="utf-8", errors="replace"), rel)
