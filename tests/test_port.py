@@ -20,6 +20,7 @@ from parityrun import cli, load, runner
 from parityrun import port as porting
 
 GUESTBOOK = pathlib.Path(__file__).resolve().parents[1] / "examples" / "guestbook"
+CART = GUESTBOOK.parent / "cart"
 AGENT = pathlib.Path(__file__).resolve().parent / "port_agent.py"
 
 PROJECT_FILE = '''import pathlib
@@ -249,4 +250,56 @@ def test_an_ai_tool_ports_the_guestbook_in_two_turns(tmp_path, language):
     assert "This turn: make scenario `validation` pass, and keep delete, sign green." in second
     assert "Please write your name." in second and "Please enter your name." in second  # expected != yours
     assert json.loads((root / "impls.json").read_text(encoding="utf-8"))["port"]["env"] == {"PORT": "{port}"}
+    assert cli.main(["--project", str(file), "check", "--impl", "port"]) == 0
+
+
+def _cart(tmp_path: pathlib.Path) -> pathlib.Path:
+    """The cart library's scenarios with its JavaScript port as the reference (node is all it needs)."""
+    root = tmp_path / "cart"
+    shutil.copytree(CART, root, ignore=shutil.ignore_patterns("golden", "out", "php", "ts", "rust"))
+    (root / "impls.json").write_text(json.dumps({"js": {"cwd": "js", "cmd": ["node", "shim.js"],
+                                                        "env": {"PORT": "{port}"}}}), encoding="utf-8")
+    file = root / "parityrun_project.py"
+    file.write_text(file.read_text(encoding="utf-8").replace('reference="php"', 'reference="js"'), encoding="utf-8")
+    return file
+
+
+@pytest.mark.parametrize(("language", "files"), [
+    ("javascript", ["index.js", "shim.js"]), ("typescript", ["index.ts", "shim.ts"]),
+    ("rust", ["src/lib.rs", "src/main.rs", "src/json.rs"])])
+def test_a_librarys_port_starts_as_an_empty_library_and_parityruns_shim(tmp_path, language, files):
+    project = load(_cart(tmp_path))
+    target = porting.plan(project, language, into=str(tmp_path / "Cart Port"), name="port")
+    assert set(files) <= set(target.files)
+    if language == "rust":
+        assert "use cart_port as lib;" in target.files["src/main.rs"]
+        assert target.files["src/json.rs"] == (runner.SHIMS / "json.rs").read_text(encoding="utf-8")
+    else:
+        assert target.spec["cmd"] == ["node", files[1]]
+        assert target.files[files[1]] == (runner.SHIMS / f"library.{files[1][-2:]}").read_text(encoding="utf-8")
+    assert porting.set_up(project, target) is True
+    task = porting.porting_md(project, target, None)
+    assert "You are porting the library in" in task and "## How the scenarios call it" in task
+    assert ("`Object`" if language == "rust" else "FUNCTIONS") in task and "`result`" in task
+    assert "pages as normalised lines" not in task
+    first = porting.prompt(1, 20, project, target, None, porting.Focus(3), [])
+    assert "Port the whole library now" in first
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript", "rust"])
+def test_an_ai_tool_ports_the_cart_library_in_two_turns(tmp_path, language):
+    """Turn 1 rounds like the target language does, so one call of `functions` fails; turn 2 is told, and fixes it."""
+    _needs(language)
+    file = _cart(tmp_path)
+    assert cli.main(["--project", str(file), "record"]) == 0
+    agent = f'"{pathlib.Path(sys.executable).as_posix()}" "{AGENT.as_posix()}" {{prompt_file}}'
+    assert cli.main(["--project", str(file), "port", "--to", language, "--into", str(tmp_path / "port"),
+                     "--name", "port", "--agent", agent]) == 0
+    root = file.parent
+    log = [json.loads(line) for line in (root / "out" / "port-log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["agent_exit"] for e in log] == [0, 0] and [e["focus"] for e in log] == [None, "functions"]
+    assert log[0]["scenarios"]["functions"] == [8, 9] and log[1]["parity"] == 100
+    second = (root / "out" / "port" / "turn-2.prompt.md").read_text(encoding="utf-8")
+    assert "This turn: make scenario `functions` pass, and keep cart, json green." in second
+    assert "FAIL step 6 fn Cart\\vat result" in second and "value: -1 != 0" in second  # expected != yours
     assert cli.main(["--project", str(file), "check", "--impl", "port"]) == 0

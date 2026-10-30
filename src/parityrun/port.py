@@ -2,11 +2,12 @@
 `check` passes.
 
 It writes the port's folder (a starting point that already runs), its entry in impls.json and PORTING.md (the task:
-how the port is started, what it is compared on, the rules). Then it loops: one agent turn, build, check; the failing
-checks of one scenario at a time become the next turn's task. It stops at 100 % parity, after --turns turns, or when
-every red scenario has gone --patience turns without getting better (those are reported, not hidden). The agent may
-not change the parityrun folder (put back after every turn) or the original app (the loop stops). Every turn is
-logged in out/port-log.jsonl; its prompt and the agent's output are kept in out/port/.
+how the port is started, what it is compared on, the rules). A library's port starts as an empty library and a shim
+made from parityrun's template (shims/), which serves it to the scenarios' calls. Then it loops: one agent turn,
+build, check; the failing checks of one scenario at a time become the next turn's task. It stops at 100 % parity,
+after --turns turns, or when every red scenario has gone --patience turns without getting better (those are
+reported, not hidden). The agent may not change the parityrun folder (put back after every turn) or the original app
+(the loop stops). Every turn is logged in out/port-log.jsonl; its prompt and the agent's output are kept in out/port/.
 """
 
 from __future__ import annotations
@@ -132,6 +133,42 @@ in Cargo.toml too: without it, a Cargo.toml in a folder above can take the port 
 }
 
 
+LIBRARY_NOTES = {
+    "javascript": """\
+The library is `index.js` (CommonJS: package.json has no `type`). `shim.js` serves it to parityrun, which starts
+`node shim.js`. Fill the shim's three tables as you port, under the original's names:
+- FUNCTIONS: each function and static method (`"Shop\\\\slug"`, `"Shop\\\\Cart::fromJson"`);
+- CLASSES: what a `new` step makes, and the name its objects are recorded under;
+- ERRORS: your error classes -> the original's exception classes (none needed if yours have the same names).
+Methods on kept objects are called by the original's method names: give your classes the same ones. The rest of the
+shim is the protocol: keep it as it is. What a call prints with process.stdout.write is its output.
+""" + NODE_NOTES,
+    "typescript": """\
+The library is `index.ts`. `shim.ts` serves it to parityrun, which starts `node shim.ts`: node 23.6 or newer runs
+TypeScript as it is by stripping the types, with no build step, so use only syntax that can be stripped (no `enum`,
+`namespace`, parameter properties or `import x = require()`) and import your own files with their .ts extension.
+Fill the shim's three tables as you port, under the original's names:
+- FUNCTIONS: each function and static method (`"Shop\\\\slug"`, `"Shop\\\\Cart::fromJson"`);
+- CLASSES: what a `new` step makes, and the name its objects are recorded under;
+- ERRORS: your error classes -> the original's exception classes (none needed if yours have the same names).
+Methods on kept objects are called by the original's method names: give your classes the same ones. The rest of the
+shim is the protocol: keep it as it is. What a call prints with process.stdout.write is its output.
+""" + NODE_NOTES,
+    "rust": """\
+The library is `src/lib.rs` (the crate `{crate}`). `src/main.rs` is the shim that serves it to parityrun, which
+builds it with `cargo build --release` in this folder and starts `target/release/{package}`. Fill in the shim's
+`Object` (a variant per type a step keeps with `as`), `call` (each function, static method, constructor and method
+under the original's names) and `data` (an object as the original's shim records it); the rest is the protocol, keep
+it as it is. What the original prints goes to the `out` string `call` is given: let functions that print write
+there. `src/json.rs` reads and writes JSON with no crates; crates are fine too (Cargo.toml). Keep the package name
+`{package}` and `[workspace]` in Cargo.toml: without it, a Cargo.toml in a folder above can take the port in.""",
+}
+
+
+def _shim(name: str) -> str:
+    return (runner.SHIMS / name).read_text(encoding="utf-8")
+
+
 def plan(project: Project, language: str, into: str | None = None, name: str | None = None) -> Target:
     """Where the port goes and how it runs; nothing is written yet."""
     reference = runner.Implementation(project, project.reference).folder.resolve()
@@ -149,17 +186,27 @@ def plan(project: Project, language: str, into: str | None = None, name: str | N
                                "\n[dependencies]\n\n"
                                "# Its own workspace: a Cargo.toml in a folder above doesn't take it in.\n[workspace]\n",
                  "src/main.rs": MAIN_RS.format(app=app), ".gitignore": "target/\n"}
-        return Target(language, name or short, folder, spec, files, "cargo", ["Bash(cargo *)"],
-                      NOTES["rust"].format(package=package))
-    entry = "server.ts" if language == "typescript" else "server.js"
+        notes = NOTES["rust"].format(package=package)
+        if project.library:
+            crate = package.replace("-", "_")
+            files.update({"src/main.rs": _shim("library.rs").replace("{crate}", crate), "src/json.rs": _shim("json.rs"),
+                          "src/lib.rs": f"//! The port of the {app} library: see PORTING.md.\n"})
+            notes = LIBRARY_NOTES["rust"].format(crate=crate, package=package)
+        return Target(language, name or short, folder, spec, files, "cargo", ["Bash(cargo *)"], notes)
+    ts = language == "typescript"
+    entry = ("shim" if project.library else "server") + (".ts" if ts else ".js")
     package = {"name": _package(folder.name), "private": True, "description": f"The port of {app}: see PORTING.md",
                **({"type": "module"} if language == "typescript" else {}), "scripts": {"start": f"node {entry}"}}
     files = {"package.json": json.dumps(package, indent=2) + "\n",
-             entry: (SERVER_TS if language == "typescript" else SERVER_JS).format(app=app),
+             entry: (SERVER_TS if ts else SERVER_JS).format(app=app),
              ".gitignore": "node_modules/\n"}
+    if project.library:
+        files[entry] = _shim("library.ts" if ts else "library.js")
+        files["index.ts" if ts else "index.js"] = f"// The port of the {app} library: see PORTING.md.\n" + (
+            "export {};\n" if ts else '"use strict";\n\nmodule.exports = {};\n')
     spec = {"cwd": cwd, "cmd": ["node", entry], "env": {"PORT": "{port}"}}
     return Target(language, name or short, folder, spec, files, "node", ["Bash(node *)", "Bash(npm *)"],
-                  NOTES[language])
+                  LIBRARY_NOTES[language] if project.library else NOTES[language])
 
 
 def set_up(project: Project, target: Target) -> bool:
@@ -209,17 +256,21 @@ def porting_md(project: Project, target: Target, project_file: pathlib.Path | No
     steps = {n: len(runner.load(project, n)["steps"]) for n in runner.all_scenarios(project)}
     scenarios = "\n".join(f"- `{n}`: {k} step{'s' * (k != 1)} in `{root}/scenarios/{n}.yaml`, the original's answers "
                           f"in `{root}/golden/{n}/recording.json`" for n, k in steps.items())
-    compared = ["the status code of every answer"]
+    compared = ["every call's `result`: the value it returns (an object as `{\"$object\": class, its public "
+                "properties}`, `null` for none), or the exception's `class` and `message` when it throws, and its "
+                "`output` when it prints"] if project.library else ["the status code of every answer"]
     if project.redirects:
         compared.append("the `Location` of every redirect")
-    compared.append("pages as normalised lines (`html`): indentation, attribute order, entity spelling and comments "
-                    "don't count; tags, attributes and text do" if project.html else "pages and text answers exactly")
-    compared.append("JSON answers value by value")
+    if not project.library:
+        compared.append("pages as normalised lines (`html`): indentation, attribute order, entity spelling and "
+                        "comments don't count; tags, attributes and text do" if project.html else
+                        "pages and text answers exactly")
+        compared.append("JSON answers value by value")
     if project.databases or project.snapshot:
         db = f"the SQLite database `{project.databases[0]}`" if project.databases and not project.snapshot \
             else "the database"
         compared.append(f"{db}: the same tables and columns, and the same rows")
-    compared.append("every file the app writes" + (
+    compared.append("every file it writes" + (
         " (in its data folder, and in its own folder as `app/<path>`: each run starts from a fresh copy of this "
         "folder" + (f", without {', '.join(target.spec.get('skip', []))}/" if target.spec.get("skip") else "") + ")"
         if project.isolate else " in its data folder"))
@@ -227,11 +278,25 @@ def porting_md(project: Project, target: Target, project_file: pathlib.Path | No
     check = f"parityrun check --impl {name}"
     where = f" (`PARITYRUN_PROJECT` points it at `{project_file.as_posix()}`)" if project_file else ""
     language = LABELS[target.language]
+    what = "library" if project.library else "app"
+    started = "served by parityrun's library shim" if project.library else \
+        f"started with `{' '.join(reference.spec['cmd'])}`"
+    order = ("Port the library's types and the helpers they share first, then every function and method, filling "
+             "the shim's tables as you go." if project.library else
+             "Port what every page shares first (routing, layout, data access), then the routes.")
+    calls = """
+
+## How the scenarios call it
+
+A step `fn: Shop\\slug` with `args: [...]` (a list, or named arguments as a map) calls that function, `fn:
+Shop\\Cart::fromJson` a static method; `new: Shop\\Cart` makes an object and `as: cart` keeps it, so that a later
+`fn: cart.add` calls its method. The names are always the original's: the shim turns them into yours.""" \
+        if project.library else ""
     return f"""# Port {reference.folder.name} to {language}
 
 Written by `parityrun port`, which rewrites it every time it runs.
 
-You are porting the app in `{reference.folder.as_posix()}` (started with `{' '.join(reference.spec['cmd'])}`) to
+You are porting the {what} in `{reference.folder.as_posix()}` ({started}) to
 {language}, in this folder. The port must behave exactly like the original: parityrun runs the same
 recorded scenarios against it and compares what it does with what the original did. The work is done when
 `{check}` reports parity 100 %.
@@ -247,7 +312,7 @@ empty data folder, `<stub>` parityrun's stand-in for outside services):
 |---|---|
 {env}
 
-Listen on 127.0.0.1 at `PORT`. parityrun waits until `GET {project.ready}` answers 200, then runs the scenario.
+Listen on 127.0.0.1 at `PORT`. parityrun waits until `GET {project.ready}` answers 200, then runs the scenario.{calls}
 
 ## What is compared
 
@@ -272,15 +337,16 @@ Each failing check lists its differences as `path: expected != yours`{where}.
 
 ## The order of work
 
-Port what every page shares first (routing, layout, data access), then the routes. After the first turn, each turn
-names one red scenario: make it green without breaking the green ones.
+{order} After the first turn, each turn names one red scenario: make it green without breaking the green
+ones.
 
 ## Rules
 
 - Never change anything in `{root}` or in `{reference.folder.as_posix()}`: parityrun puts its folder back after every
-  turn and stops when the original app changes.
-- Match the original's behaviour exactly, quirks and error pages included: the same URLs, status codes, redirects,
-  page text, JSON, database rows and files. The original is the specification; don't fix or improve it.
+  turn and stops when the original {what} changes.
+- Match the original's behaviour exactly, quirks and errors included: {"the same values, exceptions, output, database "
+  "rows and files" if project.library else "the same URLs, status codes, redirects, page text, JSON, database rows "
+  "and files"}. The original is the specification; don't fix or improve it.
 - Keep this folder runnable after every change.
 """
 
@@ -507,8 +573,11 @@ def prompt(turn: int, turns: int, project: Project, target: Target, result: Resu
         head += ("parityrun put back what the last turn changed in its folder, which you may not change: "
                  f"{', '.join(restored[:20])}.\n\n")
     if result is None:
-        return head + ("Port the whole app now: first what every page shares (routing, layout, data access), then "
-                       f"every route. Once it runs, run `{check}` and fix what it reports.\n")
+        whole = ("Port the whole library now: first its types and the helpers they share, then every function and "
+                 "method, filling the shim's tables as you go." if project.library else
+                 "Port the whole app now: first what every page shares (routing, layout, data access), then every "
+                 "route.")
+        return head + f"{whole} Once it runs, run `{check}` and fix what it reports.\n"
     head += f"Where the port is now: {result.summary()}.\n\n"
     if result.problem:
         return head + f"Nothing could be checked. {result.problem}\n\nFix that first, then run `{check}`.\n"

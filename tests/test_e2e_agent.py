@@ -1,5 +1,6 @@
-"""End to end with a real AI tool: `parityrun port` ports the guestbook's PHP site to JavaScript, TypeScript and Rust
-from scratch, and fixes a TypeScript port that has a typical porting bug from the failing checks it is given.
+"""End to end with a real AI tool: `parityrun port` ports the guestbook's PHP site and the cart's PHP library to
+JavaScript, TypeScript and Rust from scratch, and fixes a TypeScript port that has a typical porting bug from the
+failing checks it is given.
 
 These runs use your AI tool's account and take minutes each, so they only run when asked:
 
@@ -23,6 +24,7 @@ import pytest
 from parityrun import cli
 
 GUESTBOOK = pathlib.Path(__file__).resolve().parents[1] / "examples" / "guestbook"
+CART = GUESTBOOK.parent / "cart"
 AGENT = os.environ.get("PARITYRUN_TEST_AGENT")
 TURNS = {"javascript": 5, "typescript": 5, "rust": 8}
 MAIN = {"javascript": "server.js", "typescript": "server.ts", "rust": "src/main.rs"}
@@ -44,13 +46,13 @@ def _needs(language: str) -> None:
             pytest.skip(f"node {version.strip()} can't run TypeScript as is (needs 23.6 or newer)")
 
 
-def _site(tmp_path: pathlib.Path) -> pathlib.Path:
-    """The PHP guestbook and its scenarios alone in a folder, recorded; returns the project file."""
-    root = tmp_path / "guestbook"
+def _site(tmp_path: pathlib.Path, example: pathlib.Path = GUESTBOOK) -> pathlib.Path:
+    """An example's PHP version and its scenarios alone in a folder, recorded; returns the project file."""
+    root = tmp_path / example.name
     for folder in ("php", "scenarios"):
-        shutil.copytree(GUESTBOOK / folder, root / folder)
+        shutil.copytree(example / folder, root / folder)
     for name in ("parityrun_project.py", "impls.json"):
-        shutil.copy(GUESTBOOK / name, root / name)
+        shutil.copy(example / name, root / name)
     file = root / "parityrun_project.py"
     assert cli.main(["--project", str(file), "record"]) == 0
     return file
@@ -99,3 +101,15 @@ def test_the_ai_tool_fixes_a_porting_bug_from_the_failing_checks(tmp_path):
     first = (file.parent / "out" / "port" / "turn-1.prompt.md").read_text(encoding="utf-8")
     assert "This turn: make scenario `validation` pass, and keep delete, sign green." in first
     assert "FAIL step 6 POST /sign status" in first  # the no-break-space name, refused by mistake
+
+
+@pytest.mark.parametrize("language", ["javascript", "typescript", "rust"])
+def test_the_ai_tool_ports_the_php_library_to_100_percent(tmp_path, language):
+    """A library: the port is an empty library and parityrun's shim template, which the tool fills in."""
+    _needs(language)
+    file = _site(tmp_path, CART)
+    turns = _port(file, language, f"{language}-ai")
+    assert turns[-1]["parity"] == 100 and all(t["restored"] == [] for t in turns)
+    original = (CART / "php" / "src" / "functions.php").read_bytes()
+    assert (tmp_path / "cart" / "php" / "src" / "functions.php").read_bytes() == original
+    assert cli.main(["--project", str(file), "check", "--impl", f"{language}-ai"]) == 0
