@@ -26,7 +26,7 @@ def _clock(seconds: float) -> str:
 
 class Live:
     def __init__(self, config: pytest.Config) -> None:
-        self.reporter = config.pluginmanager.getplugin("terminalreporter")
+        self.plugins = config.pluginmanager
         self.echo = config.getoption("capture") != "no"  # with -s, port's lines are on the terminal already
         self.lock = threading.Lock()
         self.test, self.started, self.next, self.shown, self.said = None, 0.0, 0.0, False, []
@@ -43,6 +43,11 @@ class Live:
         self.done = threading.Event()
         if self.out:
             threading.Thread(target=self._beat, daemon=True).start()
+
+    @property
+    def reporter(self):
+        """pytest's terminal reporter, looked up when needed: this conftest is configured before pytest makes it."""
+        return self.plugins.getplugin("terminalreporter")
 
     def _write(self, lines: list[str]) -> None:
         try:
