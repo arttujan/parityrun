@@ -6,7 +6,7 @@
 # Run it again to update to the version below. $env:PARITYRUN_SOURCE installs from elsewhere: a folder, git+https://...
 & {
     $ErrorActionPreference = "Stop"
-    $version = "0.6.0"
+    $version = "0.6.1"
     $source = if ($env:PARITYRUN_SOURCE) { $env:PARITYRUN_SOURCE } else { "parityrun==$version" }
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Write-Host "Installing uv, which installs parityrun ..."

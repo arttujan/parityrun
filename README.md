@@ -88,7 +88,8 @@ capture until coverage is where you want it.
 `init` recognises PHP (plain, Laravel, Symfony, WordPress), Node.js, Python (Django, Flask, FastAPI) and Rust apps,
 and PHP libraries: code with no pages, whose scenarios call its functions and classes (`fn:`, `new:`) instead of
 visiting pages, and whose port gets a ready-made shim to fill in.
-Everything else (settings, scenario files, databases, LLM and outside-service stubs, examples):
+Everything else (settings, scenario files, databases, LLM and outside-service stubs, examples) is in
+[the wiki](https://github.com/arttujan/parityrun/wiki), and on one page in
 [docs/reference.md](https://github.com/arttujan/parityrun/blob/main/docs/reference.md).
 
 ## Licence

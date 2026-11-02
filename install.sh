@@ -6,7 +6,7 @@
 # uv (https://docs.astral.sh/uv/) installs parityrun as a command of its own, with its own Python when none fits.
 # Run it again to update to the version below. PARITYRUN_SOURCE installs from elsewhere: a folder, git+https://...
 set -eu
-version="0.6.0"
+version="0.6.1"
 source="${PARITYRUN_SOURCE:-parityrun==$version}"
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv, which installs parityrun ..."

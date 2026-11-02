@@ -127,7 +127,8 @@ def test_done_says_what_the_ports_are_proven_on(tmp_path, capsys):
 def test_a_library_is_told_to_call_more_of_itself(tmp_path, capsys):
     out = _status(_project(tmp_path, routes=("fn slug", "fn price"), library=True), capsys)
     assert "  0/2 functions, methods and classes called\n" in out
-    assert "Next: edit scenarios/*.yaml, then: parityrun\n      call the rest of the library: 2 not called" in out
+    assert "Next: edit scenarios/*.yaml, then: parityrun record\n      call the rest of the library: 2 not called" \
+        in out  # record: the bare command records only what has no recording, not a scenario changed since
 
 
 def test_the_bare_command_records_what_isnt_yet_then_shows_the_status(tmp_path, capsys):

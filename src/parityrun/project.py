@@ -1,8 +1,9 @@
 """A project: where its scenarios and recordings live, and what its service needs to run under the harness.
 
-A project is a Python file that defines `PROJECT = Project(...)` (see the README). Everything with a default works
-for a plain HTTP service; the rest describes the service: the environment it starts with, how to tell it is up and
-how to stop it, the SQLite databases and files it leaves behind, and any outside services the stub answers for it.
+A project is a Python file that defines `PROJECT = Project(...)` (the wiki's Project Settings page). Everything
+with a default works for a plain HTTP service; the rest describes the service: the environment it starts with, how
+to tell it is up and how to stop it, the SQLite databases and files it leaves behind, and any outside services the
+stub answers for it.
 """
 
 from __future__ import annotations

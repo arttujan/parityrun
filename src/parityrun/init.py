@@ -27,6 +27,7 @@ from .project import Project, RunInfo
 from .stubs import Stub
 
 FOLDER = "parityrun"
+WIKI = "https://github.com/arttujan/parityrun/wiki"
 DOCROOTS = ("public", "web", "htdocs", "www", "public_html")
 TOKEN = re.compile(r"csrf|xsrf|token|nonce|authenticity", re.I)
 RISKY = re.compile(r"log-?out|sign-?out|delete|remove|destroy|reset|uninstall|unsubscribe", re.I)
@@ -86,7 +87,7 @@ def _databases(app: pathlib.Path, stack: Stack) -> None:
     if connection in ("mysql", "mariadb", "pgsql", "postgres", "postgresql"):
         kind = "MySQL" if connection in ("mysql", "mariadb") else "PostgreSQL"
         stack.notes.append(f"The app uses {kind} (.env DB_CONNECTION). Every run must start from the same data and "
-                           "the tables must be recorded: fill in setup= and snapshot= below (README: Databases).")
+                           f"the tables must be recorded: fill in setup= and snapshot= below ({WIKI}/Databases).")
         return
     if connection == "sqlite" and env.get("DB_DATABASE"):
         db = env["DB_DATABASE"]
@@ -157,7 +158,8 @@ def _php(app: pathlib.Path) -> Stack | None:
         stack.ignore_files = ["var/cache/*", "var/log/*"]
     elif (app / "wp-config.php").exists() or (app / "wp-load.php").exists():
         stack.label = "PHP (WordPress)"
-        stack.notes.append("WordPress keeps its data in MySQL: fill in setup= and snapshot= below (README: Databases).")
+        stack.notes.append(f"WordPress keeps its data in MySQL: fill in setup= and snapshot= below "
+                           f"({WIKI}/Databases).")
     if not (app / "vendor").exists() and (app / "composer.json").exists():
         stack.notes.append("vendor/ is missing: run `composer install` in the app's folder first.")
     _databases(app, stack)
@@ -228,7 +230,7 @@ def detect(app: pathlib.Path) -> Stack:
         if stack:
             return stack
     raise SystemExit(f"Couldn't tell how to start the app in {app}: no PHP files, package.json, manage.py, app.py or "
-                     "Cargo.toml. Write parityrun/impls.json yourself (README: A project).")
+                     f"Cargo.toml. Write parityrun/impls.json yourself ({WIKI}/Project-Settings).")
 
 
 class _Page(HTMLParser):
@@ -442,8 +444,8 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True, guide
             print("The library loads: parityrun's shim serves it.")
         if guide:
             print("\nNext:\n  edit scenarios/calls.yaml   the calls people make, with real arguments (the API is "
-                  "listed at its top)\n  parityrun                   record what the library returns, prints and "
-                  "throws, and see what to do next\n"
+                  "listed at its top)\n  parityrun record            record what the library returns, prints and "
+                  "throws\n  parityrun                   see where you are and what to do next\n"
                   "  git add parityrun           keep the settings and recordings with the code")
         return 0
     if check_start:

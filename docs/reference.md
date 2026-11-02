@@ -1,7 +1,7 @@
 # parityrun reference
 
 Everything the [README](../README.md) leaves out: what is compared, the project files, every setting, every
-scenario key and every command.
+scenario key and every command. The same, page by page: [the wiki](https://github.com/arttujan/parityrun/wiki).
 
 - [What is compared](#what-is-compared)
 - [Starting from an existing app](#starting-from-an-existing-app): `init`, `capture`, `routes`, code coverage
@@ -40,11 +40,19 @@ against those recordings: a rewrite in another language, a port, or the next ver
 ## Starting from an existing app
 
 ```
+parityrun             # all of the below that isn't done yet, then where you are and the command to run next
 parityrun init        # finds how to start the app and every route in its code, writes parityrun/
 parityrun capture     # opens the app in your browser: use it, every route you visit is ticked off
 parityrun record      # records what the app does now into parityrun/golden/
 parityrun coverage    # the routes and (PHP) the lines of code no scenario ran yet
 ```
+
+**`parityrun`** with no command sets parityrun up (`init`) when the app's folder has no `parityrun/` yet, records
+every scenario that has no recording, and then shows where the project stands: the scenarios recorded, the routes
+visited (for a library, the functions, methods and classes called), the share of the PHP code run, and each port's
+parity at its last `check`. It ends with the one command to run next: `capture` while routes are unvisited, `port`
+when there is no port yet, `port` again or `check` for a port that is behind, and, once every port is at 100 %, what
+they are proven on.
 
 **`init`** tells the stack (PHP, Laravel, Symfony, WordPress, Node.js, Django, Flask, FastAPI, Rust), starts the app
 once in a throwaway copy, reads its home page and its code, and writes `parityrun/`: how to start the app
@@ -86,7 +94,8 @@ parityrun port --to typescript|javascript|rust [--into FOLDER] [--name NAME] [--
                [--turns 20] [--patience 3] [--turn-minutes 60] [--setup-only]
 ```
 
-Record first: the recordings are what the port is held to. `port` then
+`--to` takes `ts`, `js` and `rs` for short. The recordings are what the port is held to, so `port` first records any
+scenario that has no recording yet. Then it
 
 1. writes the port's starting point, an app that runs and answers 501 everywhere, in `--into` (default: beside the
    app, `<app>-ts`, `<app>-js` or `<app>-rs`). JavaScript is `server.js` (CommonJS), TypeScript is `server.ts` run by
@@ -191,7 +200,7 @@ golden/endpoints.json   every route, for `coverage` and `capture`
 `impls.json`: a working directory (relative to `repo`), a command with `{port}`, `{repo}`, `{python}` and
 `{shims}` (parityrun's shims, see Libraries) filled in,
 and optionally a `cli` command for command-line steps. A program named without a path is looked up on PATH.
-Optionally too: `env`, environment values for this implementation only (`{port}`, `{repo}`, `{python}` filled in, on
+Optionally too: `env`, environment values for this implementation only (`{port}`, `{repo}`, `{python}`, `{shims}` filled in, on
 top of the project's `env()`); `build`, a command run in its folder before `record` or `check` (a failed build is
 0 % parity, with the compiler's output); `skip`, names not copied into an isolated run's copy (`target` for Rust).
 
@@ -348,15 +357,17 @@ parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
                                            compare; prints each failing comparison and the parity %, writes
                                            out/report-<impl>.json, keeps the run in out/<impl>/<name>/
 parityrun coverage                         the routes no scenario calls, and the PHP lines no scenario ran
-parityrun port --to typescript|javascript|rust (or ts|js|rs) [--agent claude|"COMMAND"] [--into FOLDER] [--name NAME]
+parityrun port --to typescript|javascript|rust|ts|js|rs [--agent claude|"COMMAND"] [--into FOLDER] [--name NAME]
                [--turns 20] [--patience 3] [--turn-minutes 60] [--setup-only]
                                            port the app with your AI tool until check passes; logs out/port-log.jsonl
+parityrun --version                        the installed version
 ```
 
 Every command takes `--project FILE` first; without it, `$PARITYRUN_PROJECT`, else `parityrun_project.py` here or
 `parityrun/parityrun_project.py`. With none of them, every command sets parityrun up first (`init`); the bare
-`parityrun`, `check` and `port` first record the scenarios that have no recording yet. `check` exits 0 only when every comparison passes, and keeps what the
-implementation did as `out/<impl>/<name>/recording.json` (with its pictures), to set beside
+`parityrun`, `check` and `port` first record the scenarios that have no recording yet. `check` exits 0 only when
+every comparison passes, and keeps what the implementation did as `out/<impl>/<name>/recording.json` (with its
+pictures), to set beside
 `golden/<name>/recording.json`. Review the diff of `golden/` before committing a new recording: from then on a
 recording is only as right as the run that made it.
 

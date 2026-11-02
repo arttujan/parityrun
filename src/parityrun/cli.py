@@ -180,8 +180,8 @@ def status(project: Project) -> int:
     if missing:
         step = "parityrun record", f"{', '.join(missing)}: the two runs differed (see above); make them alike"
     elif project.library and (not names or to_visit):
-        step = "edit scenarios/*.yaml, then: parityrun", (f"call the rest of the library: {len(to_visit)} not "
-                                                          "called yet (`parityrun routes` lists them)")
+        step = "edit scenarios/*.yaml, then: parityrun record", (f"call the rest of the library: {len(to_visit)} "
+                                                                 "not called yet (`parityrun routes` lists them)")
     elif not names or to_visit:
         step = "parityrun capture", f"use the app in your browser: {len(to_visit)} routes not visited yet"
     elif not ports:
