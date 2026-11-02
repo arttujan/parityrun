@@ -79,7 +79,10 @@ class Live:
             test, seconds, shown = self.test, time.time() - self.started, self.shown
             self.test = None
         if shown and self.reporter:  # through pytest's own writer, so its dots and percentages go on from here
-            self.reporter.write_line(f"[done {_clock(seconds)}] {test}")
+            writer = self.reporter._tw  # its write_line breaks the line only after a file name, not after dots
+            if writer.width_of_current_line:
+                writer.line()
+            writer.line(f"[done {_clock(seconds)}] {test}")
 
     def port_said(self, text: str) -> None:
         if not self.echo:
