@@ -81,6 +81,12 @@ def test_the_installers_install_this_version(capsys):
     assert capsys.readouterr().out == f"parityrun {__version__}\n"
 
 
+def test_the_readme_works_on_pypi_too():
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert "pip install parityrun\n" in readme
+    assert [link for link in re.findall(r"\]\(([^)]+)\)", readme) if not link.startswith("https://")] == []
+
+
 def test_port_languages_have_short_names():
     assert [cli.language(x) for x in ("ts", "JS", "rs", "rust", "TypeScript")] == \
         ["typescript", "javascript", "rust", "rust", "typescript"]

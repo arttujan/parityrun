@@ -4,10 +4,10 @@
 #   curl -LsSf https://raw.githubusercontent.com/arttujan/parityrun/main/install.sh | sh
 #
 # uv (https://docs.astral.sh/uv/) installs parityrun as a command of its own, with its own Python when none fits.
-# Run it again to update. PARITYRUN_SOURCE installs from elsewhere: a folder, an archive or git+https://...
+# Run it again to update to the version below. PARITYRUN_SOURCE installs from elsewhere: a folder, git+https://...
 set -eu
 version="0.6.0"
-source="${PARITYRUN_SOURCE:-parityrun @ https://github.com/arttujan/parityrun/archive/refs/tags/v$version.zip}"
+source="${PARITYRUN_SOURCE:-parityrun==$version}"
 if ! command -v uv >/dev/null 2>&1; then
     echo "Installing uv, which installs parityrun ..."
     if command -v curl >/dev/null 2>&1; then

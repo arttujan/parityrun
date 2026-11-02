@@ -7,22 +7,25 @@ tool, it can do the port too, turn by turn, until the new version matches.
 
 ## Install
 
-Windows (PowerShell):
+```
+pip install parityrun
+```
+
+That needs Python 3.10 or newer. Without Python, one line installs everything. On Windows (PowerShell):
 
 ```
 powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/arttujan/parityrun/main/install.ps1 | iex"
 ```
 
-macOS and Linux:
+On macOS and Linux:
 
 ```
 curl -LsSf https://raw.githubusercontent.com/arttujan/parityrun/main/install.sh | sh
 ```
 
-Nothing else is needed first: the installer gets [uv](https://docs.astral.sh/uv/), which installs parityrun as a
-command of its own (with its own Python if you have none). Run it again to update. Your app still needs whatever it
-needs to run (for a PHP app: `php`). With Python 3.10 or newer, `pip install
-git+https://github.com/arttujan/parityrun@v0.6.0` works too.
+The installer gets [uv](https://docs.astral.sh/uv/), which installs parityrun as a command of its own, with its own
+Python. Run it again to update (or `pip install -U parityrun`). Your app still needs whatever it needs to run (for a
+PHP app: `php`).
 
 ## Use it
 
@@ -86,7 +89,7 @@ capture until coverage is where you want it.
 and PHP libraries: code with no pages, whose scenarios call its functions and classes (`fn:`, `new:`) instead of
 visiting pages, and whose port gets a ready-made shim to fill in.
 Everything else (settings, scenario files, databases, LLM and outside-service stubs, examples):
-[docs/reference.md](docs/reference.md).
+[docs/reference.md](https://github.com/arttujan/parityrun/blob/main/docs/reference.md).
 
 ## Licence
 
