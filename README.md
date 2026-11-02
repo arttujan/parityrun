@@ -7,26 +7,48 @@ tool, it can do the port too, turn by turn, until the new version matches.
 
 ## Install
 
+Windows (PowerShell):
+
 ```
-pip install git+https://github.com/arttujan/parityrun@v0.5.0
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/arttujan/parityrun/main/install.ps1 | iex"
 ```
 
-Python 3.10 or newer, and whatever your app itself needs to run (for a PHP app: `php` on PATH).
+macOS and Linux:
+
+```
+curl -LsSf https://raw.githubusercontent.com/arttujan/parityrun/main/install.sh | sh
+```
+
+Nothing else is needed first: the installer gets [uv](https://docs.astral.sh/uv/), which installs parityrun as a
+command of its own (with its own Python if you have none). Run it again to update. Your app still needs whatever it
+needs to run (for a PHP app: `php`). With Python 3.10 or newer, `pip install
+git+https://github.com/arttujan/parityrun@v0.6.0` works too.
 
 ## Use it
 
 In your app's folder:
 
 ```
-parityrun init        # finds how to start the app and every route in its code
-parityrun capture     # opens the app in your browser: use it as people do, then press Finish
-parityrun record      # records what the app does
+parityrun
 ```
 
-`capture` shows on every page how many of the app's routes you have visited, and `http://127.0.0.1:8000/__parityrun`
-lists the ones still to go. Run it again until the list is done. Your app's own files are never changed.
+That's the one command to remember. The first time, it finds how to start your app and every route in its code,
+and records what the app does. Every time, it shows where you are and the next command to run:
 
-When the new version is ready, tell parityrun how to start it in `parityrun/impls.json`:
+```
+my-app: 1 of 1 scenario recorded
+  3/14 routes visited
+
+Next: parityrun capture
+      use the app in your browser: 11 routes not visited yet
+```
+
+`parityrun capture` opens the app in your browser: use it as people do, then press Finish. Every page shows how
+many of the app's routes you have visited, and `http://127.0.0.1:8000/__parityrun` lists the ones still to go. Your
+app's own files are never changed.
+
+When you have a new version of the app (or let your AI tool make one, below), tell parityrun how to start it in
+`parityrun/impls.json`:
 
 ```json
 "node": {"cwd": "../my-app-js", "cmd": ["node", "server.js"]}
@@ -42,7 +64,7 @@ parityrun coverage               # the routes and lines of code no scenario has 
 ## Let your AI tool port it
 
 ```
-parityrun port --to typescript      # or javascript, rust
+parityrun port --to ts      # TypeScript; or js (JavaScript), rs (Rust)
 ```
 
 parityrun writes the new app's starting point beside yours (`../my-app-ts`), adds it to `impls.json` and gives your AI

@@ -336,6 +336,8 @@ Quote text with a comma inside `{...}`: YAML splits it otherwise, and the loader
 ## Commands
 
 ```
+parityrun                                  set up (init) and record what isn't yet, then show the scenarios, routes,
+                                           code run and every port's parity, and the command to run next
 parityrun init [PATH] [--force] [--no-start]
                                            set parityrun up in an existing app's folder (writes parityrun/)
 parityrun capture [NAME] [--port 8000] [--impl NAME] [--no-browser]
@@ -346,13 +348,14 @@ parityrun check [--quick|--slow] [--impl NAME] [scenario ...]
                                            compare; prints each failing comparison and the parity %, writes
                                            out/report-<impl>.json, keeps the run in out/<impl>/<name>/
 parityrun coverage                         the routes no scenario calls, and the PHP lines no scenario ran
-parityrun port --to typescript|javascript|rust [--agent claude|"COMMAND"] [--into FOLDER] [--name NAME]
+parityrun port --to typescript|javascript|rust (or ts|js|rs) [--agent claude|"COMMAND"] [--into FOLDER] [--name NAME]
                [--turns 20] [--patience 3] [--turn-minutes 60] [--setup-only]
                                            port the app with your AI tool until check passes; logs out/port-log.jsonl
 ```
 
 Every command takes `--project FILE` first; without it, `$PARITYRUN_PROJECT`, else `parityrun_project.py` here or
-`parityrun/parityrun_project.py`. `check` exits 0 only when every comparison passes, and keeps what the
+`parityrun/parityrun_project.py`. With none of them, every command sets parityrun up first (`init`); the bare
+`parityrun`, `check` and `port` first record the scenarios that have no recording yet. `check` exits 0 only when every comparison passes, and keeps what the
 implementation did as `out/<impl>/<name>/recording.json` (with its pictures), to set beside
 `golden/<name>/recording.json`. Review the diff of `golden/` before committing a new recording: from then on a
 recording is only as right as the run that made it.

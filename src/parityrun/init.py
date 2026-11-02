@@ -392,8 +392,9 @@ def _wrap(text: str, width: int = 110) -> list[str]:
     return lines + [line] if line else lines
 
 
-def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> int:
-    """Write parityrun/ in the app's folder; 0 when the app started and the smoke scenario is ready to record."""
+def init(app: pathlib.Path, force: bool = False, check_start: bool = True, guide: bool = True) -> int:
+    """Write parityrun/ in the app's folder; 0 when the app started and the smoke scenario is ready to record.
+    `guide`: end with the commands to run next (not when the bare `parityrun` goes on by itself)."""
     app = app.resolve()
     folder = app / FOLDER
     if folder.exists() and not force:
@@ -403,7 +404,8 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> in
     print(f"Found: {stack.label} app in {app}")
     found: dict = {}
     if stack.tool and not shutil.which(stack.tool):
-        found = {"error": f"{stack.tool} isn't installed (or not on PATH): install it and run init again."}
+        found = {"error": f"{stack.tool} isn't installed (or not on PATH): install it, then run: "
+                          "parityrun init --force"}
     elif check_start:
         print(f"Starting it once to look at it: {' '.join(stack.cmd)}")
         found = probe(app, stack)
@@ -438,17 +440,20 @@ def init(app: pathlib.Path, force: bool = False, check_start: bool = True) -> in
     if stack.library:
         if check_start:
             print("The library loads: parityrun's shim serves it.")
-        print("\nNext:\n  edit scenarios/calls.yaml   the calls people make, with real arguments (the API is listed "
-              "at its top)\n  parityrun record            record what the library returns, prints and throws\n"
-              "  git add parityrun           keep the settings and recordings with the code")
+        if guide:
+            print("\nNext:\n  edit scenarios/calls.yaml   the calls people make, with real arguments (the API is "
+                  "listed at its top)\n  parityrun                   record what the library returns, prints and "
+                  "throws, and see what to do next\n"
+                  "  git add parityrun           keep the settings and recordings with the code")
         return 0
     if check_start:
         pages = len(found.get("links", []))
         tokens = f", form tokens captured: {', '.join(found['tokens'])}" if found.get("tokens") else ""
         print(f"The app runs: home page {found['status']}, {pages} linked page{'s' * (pages != 1)} in the smoke "
               f"scenario{tokens}.")
-    print("\nNext:\n  parityrun capture       use the app in your browser: every route you visit is ticked off and\n"
-          "                          what you do becomes a scenario\n"
-          "  parityrun record        record what the app does now\n"
-          "  git add parityrun       keep the settings and recordings with the code")
+    if guide:
+        print("\nNext:\n  parityrun               record what the app does now and see what to do next\n"
+              "  parityrun capture       use the app in your browser: every route you visit is ticked off and\n"
+              "                          what you do becomes a scenario\n"
+              "  git add parityrun       keep the settings and recordings with the code")
     return 0

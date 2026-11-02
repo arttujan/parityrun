@@ -1,6 +1,8 @@
 """The parityrun command: record golden runs from the reference implementation, check any implementation against
 them, and list the endpoints the scenarios don't use yet.
 
+  parityrun                                                        set up (init) and record what isn't yet, then show
+                                                                   where the project stands and the command to run next
   parityrun [--project FILE] record [scenario ...]                 new golden recordings from the reference (run twice:
                                                                    anything that differs between the runs is reported)
   parityrun [--project FILE] check [--quick | --slow] [--impl NAME] [scenario ...]
@@ -11,9 +13,11 @@ them, and list the endpoints the scenarios don't use yet.
   parityrun [--project FILE] capture [NAME] [--port 8000]          use the app in a browser; it becomes a scenario
   parityrun [--project FILE] port --to typescript|javascript|rust [--agent claude|"CMD {prompt_file}"]
                                                                    port the app with an AI tool until check passes
+                                                                   (ts, js and rs for short)
 
 FILE (default $PARITYRUN_PROJECT, else parityrun_project.py, else parityrun/parityrun_project.py) defines
-PROJECT = parityrun.Project(...).
+PROJECT = parityrun.Project(...). With none of them, every command but init sets parityrun up first (init); the
+bare command, check and port record the scenarios that have no recording yet before they go on.
 """
 
 import argparse
@@ -25,11 +29,23 @@ import shutil
 import sys
 import tempfile
 
+from . import __version__
 from . import coverage as code_coverage
 from . import runner
 from .project import Project, load
 
 LANGUAGES = ("javascript", "typescript", "rust")
+SHORT = {"js": "javascript", "ts": "typescript", "rs": "rust"}
+SHORT_OF = {long: short for short, long in SHORT.items()}
+PORTS = {"js": "javascript", "ts": "typescript", "rust": "rust"}  # the names `port` gives, and their languages
+
+
+def language(text: str) -> str:
+    """A port's language, also by its short name (ts, js, rs)."""
+    name = SHORT.get(text.lower(), text.lower())
+    if name not in LANGUAGES:
+        raise argparse.ArgumentTypeError(f"{text!r}: javascript (js), typescript (ts) or rust (rs)")
+    return name
 
 
 def dump(recording: dict) -> str:
@@ -118,6 +134,74 @@ def check(project: Project, impl_name: str, names: list[str]) -> int:
     return 0 if total and passed == total else 1
 
 
+def unrecorded(project: Project) -> list[str]:
+    return [n for n in runner.all_scenarios(project) if not (project.golden / n / "recording.json").exists()]
+
+
+def last_parity(project: Project, impl: str) -> tuple[int, int] | None:
+    """(passed, total) checks of the implementation's last `check` (out/report-<impl>.json); None before one."""
+    path = project.out / f"report-{impl}.json"
+    if not path.exists():
+        return None
+    results = [r for found in json.loads(path.read_text(encoding="utf-8")).values() for r in found]
+    return sum(r["ok"] for r in results), len(results)
+
+
+def status(project: Project) -> int:
+    """Where the project stands: scenarios, routes (or a library's API), code run, every port's parity; then the one
+    command to run next."""
+    names = runner.all_scenarios(project)
+    missing = unrecorded(project)
+    reference = runner.Implementation(project, project.reference)
+    ports = [n for n in json.loads((project.root / "impls.json").read_text(encoding="utf-8")) if n != project.reference]
+    print(f"{reference.folder.resolve().name}: {len(names) - len(missing)} of {len(names)} scenario"
+          f"{'s' * (len(names) != 1)} recorded")
+    to_visit: list[str] = []
+    visited = ""
+    if (project.golden / "endpoints.json").exists():
+        templates = [f"{m} {p}" for m, p in _templates(project)]
+        hit = covered(project)
+        to_visit = [t for t in templates if t not in hit]
+        what = "functions, methods and classes called" if project.library else "routes visited"
+        if templates:
+            visited = f"{len(templates) - len(to_visit)}/{len(templates)} {what}"
+            print(f"  {visited}")
+    lines = ""
+    reports = code_coverage.golden_reports(project.golden)
+    if reports:
+        s = code_coverage.summary(code_coverage.merge(reports), reference.folder)
+        lines = f"{s['percent']:.0f} % of the PHP code run"
+        print(f"  {lines} ({s['run']}/{s['lines']} lines)")
+    parity = {n: last_parity(project, n) for n in ports}
+    for n, got in parity.items():
+        print(f"  {n}: " + (f"parity {100 * got[0] / got[1]:.1f} % at its last check" if got and got[1] else
+                            "not checked yet"))
+    behind = [n for n, got in parity.items() if not got or not got[1] or got[0] != got[1]]
+    if missing:
+        step = "parityrun record", f"{', '.join(missing)}: the two runs differed (see above); make them alike"
+    elif project.library and (not names or to_visit):
+        step = "edit scenarios/*.yaml, then: parityrun", (f"call the rest of the library: {len(to_visit)} not "
+                                                          "called yet (`parityrun routes` lists them)")
+    elif not names or to_visit:
+        step = "parityrun capture", f"use the app in your browser: {len(to_visit)} routes not visited yet"
+    elif not ports:
+        step = "parityrun port --to ts", "your AI tool ports it to TypeScript (or js, rs) until it matches"
+        if not shutil.which("claude"):
+            step = step[0], step[1] + ('; it uses Claude Code (https://claude.com/claude-code), or add --agent '
+                                       '"yourtool {prompt_file}"')
+    elif behind:
+        n = behind[0]
+        step = (f"parityrun port --to {SHORT_OF[PORTS[n]]}", "your AI tool goes on from where the port is") \
+            if n in PORTS and parity[n] else (f"parityrun check --impl {n}", "see what differs")
+    else:
+        proof = " and ".join(x for x in (visited, lines) if x)
+        print(f"\nDone: {', '.join(ports)} behave{'s' * (len(ports) == 1)} like the original on {len(names)} "
+              f"scenario{'s' * (len(names) != 1)}{f' ({proof})' if proof else ''}.")
+        step = f"parityrun check --impl {ports[0]}", "after every change, to see it still does"
+    print(f"\nNext: {step[0]}\n      {step[1]}")
+    return 0
+
+
 def _templates(project: Project) -> list[tuple[str, str]]:
     path = project.golden / "endpoints.json"
     if not path.exists():
@@ -185,7 +269,8 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
         parser.add_argument("--project", default=os.environ.get("PARITYRUN_PROJECT") or "parityrun_project.py",
                             help="the file that defines PROJECT (default: $PARITYRUN_PROJECT, else "
                                  "parityrun_project.py)")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    sub = parser.add_subparsers(dest="cmd")
     rec = sub.add_parser("record", help="new golden recordings from the reference implementation")
     rec.add_argument("scenarios", nargs="*")
     rec.add_argument("--force", action="store_true", help="record even if two reference runs differ")
@@ -207,7 +292,8 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     cap.add_argument("--no-browser", action="store_true", help="don't open the browser")
     tr = sub.add_parser("port", help="port the app to another language with your AI tool, turn by turn, until check "
                                      "passes")
-    tr.add_argument("--to", required=True, choices=sorted(LANGUAGES), help="the language of the port")
+    tr.add_argument("--to", required=True, type=language, metavar="{javascript,typescript,rust}",
+                    help="the language of the port (or js, ts, rs)")
     tr.add_argument("--into", help="the port's folder (default: beside the app, <app>-ts, -js or -rs)")
     tr.add_argument("--name", help="its name in impls.json (default: ts, js or rust)")
     tr.add_argument("--agent", default="claude",
@@ -225,8 +311,25 @@ def main(argv: list[str] | None = None, project: Project | None = None) -> int:
     if project is None and args.project == "parityrun_project.py" and not pathlib.Path(args.project).exists() \
             and pathlib.Path("parityrun", "parityrun_project.py").exists():  # what `init` wrote, from the app's folder
         args.project = str(pathlib.Path("parityrun", "parityrun_project.py"))
+    elif project is None and args.project == "parityrun_project.py" and not pathlib.Path(args.project).exists():
+        from .init import init
+        print("parityrun isn't set up here yet: setting it up first (parityrun init).\n")
+        if init(pathlib.Path("."), guide=False):
+            return 1
+        print()
+        args.project = str(pathlib.Path("parityrun", "parityrun_project.py"))
     source = None if project else pathlib.Path(args.project).resolve()  # what `port` lets the agent check with
     project = project or load(args.project)
+    failed = 0
+    if args.cmd in (None, "check", "port") and unrecorded(project):
+        missing = unrecorded(project)
+        print(f"Recording first: {', '.join(missing)}")
+        failed = record(project, missing, force=False)
+        if failed and args.cmd:
+            return 1
+        print()
+    if args.cmd is None:
+        return status(project) or failed
     if args.cmd == "record":
         return record(project, args.scenarios or runner.all_scenarios(project), args.force)
     if args.cmd == "check":
