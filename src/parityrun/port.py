@@ -1,5 +1,4 @@
-"""`parityrun port`: port the reference app to another language with the user's own AI tool, turn by turn, until
-`check` passes.
+"""`parityrun port`: port the reference app to another language with the user's own AI tool, until `check` passes.
 
 It writes the port's folder (a starting point that already runs), its entry in impls.json and PORTING.md (the task:
 how the port is started, what it is compared on, the rules). A library's port starts as an empty library and a shim
@@ -14,7 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import datetime
+import datetime as dt
 import io
 import json
 import os
@@ -26,27 +25,36 @@ import subprocess
 import sysconfig
 import tempfile
 import time
+from http import HTTPStatus
+from typing import TYPE_CHECKING
 
 import httpx
 
-from . import runner
+from . import commands, runner
 from .project import Project, RunInfo
 from .stubs import Stub
+
+if TYPE_CHECKING:
+    from .jsontypes import Data
 
 PROMPT_CHECKS = 30
 """The most failing checks one turn's prompt lists (the rest are in out/report-<name>.json)."""
 SAMPLE_PORT = 8123
 """The port PORTING.md's example environment shows."""
 LABELS = {"javascript": "JavaScript", "typescript": "TypeScript", "rust": "Rust"}
+RESTORED_LISTED = 20  # the put-back paths a prompt names
+RUN_DETAIL = 40  # the lines of a crashed run's output a prompt shows
+DETAIL = 8  # the lines of any other failing check's differences a prompt shows
 
 
 @dataclasses.dataclass
 class Target:
     """The port: its language, its name in impls.json, its folder and how parityrun builds and starts it."""
+
     language: str
     name: str
     folder: pathlib.Path
-    spec: dict
+    spec: Data
     """Its impls.json entry."""
     files: dict[str, str]
     """The starting point written into a new folder (never over a file that exists)."""
@@ -66,7 +74,7 @@ def _relative(folder: pathlib.Path, base: pathlib.Path) -> str:
 
 
 def _package(name: str) -> str:
-    """A Cargo package name (the program's name too) from a folder name."""
+    """Return a Cargo package name (the program's name too) made from a folder name."""
     package = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")
     return package if package[:1].isalpha() else f"app-{package}".rstrip("-")
 
@@ -119,13 +127,15 @@ NODE_NOTES = """\
 NOTES = {
     "javascript": """\
 parityrun starts it with `node server.js` (CommonJS: package.json has no `type`).
-""" + NODE_NOTES,
+"""
+    + NODE_NOTES,
     "typescript": """\
 parityrun starts it with `node server.ts`: node 23.6 or newer runs TypeScript as it is by stripping the types, with
 no build step. So:
 - use only syntax that can be stripped: no `enum`, `namespace`, parameter properties or `import x = require()`;
 - import your own files with their .ts extension (`import { db } from "./db.ts"`); package.json has `type: module`.
-""" + NODE_NOTES,
+"""
+    + NODE_NOTES,
     "rust": """\
 parityrun builds it with `cargo build --release` in this folder and starts `target/release/{package}`. Crates are
 fine: add them to Cargo.toml. Keep the package name `{package}`: it is the program's name. Keep `[workspace]`
@@ -142,7 +152,8 @@ The library is `index.js` (CommonJS: package.json has no `type`). `shim.js` serv
 - ERRORS: your error classes -> the original's exception classes (none needed if yours have the same names).
 Methods on kept objects are called by the original's method names: give your classes the same ones. The rest of the
 shim is the protocol: keep it as it is. What a call prints with process.stdout.write is its output.
-""" + NODE_NOTES,
+"""
+    + NODE_NOTES,
     "typescript": """\
 The library is `index.ts`. `shim.ts` serves it to parityrun, which starts `node shim.ts`: node 23.6 or newer runs
 TypeScript as it is by stripping the types, with no build step, so use only syntax that can be stripped (no `enum`,
@@ -153,7 +164,8 @@ Fill the shim's three tables as you port, under the original's names:
 - ERRORS: your error classes -> the original's exception classes (none needed if yours have the same names).
 Methods on kept objects are called by the original's method names: give your classes the same ones. The rest of the
 shim is the protocol: keep it as it is. What a call prints with process.stdout.write is its output.
-""" + NODE_NOTES,
+"""
+    + NODE_NOTES,
     "rust": """\
 The library is `src/lib.rs` (the crate `{crate}`). `src/main.rs` is the shim that serves it to parityrun, which
 builds it with `cargo build --release` in this folder and starts `target/release/{package}`. Fill in the shim's
@@ -169,129 +181,222 @@ def _shim(name: str) -> str:
     return (runner.SHIMS / name).read_text(encoding="utf-8")
 
 
-def plan(project: Project, language: str, into: str | None = None, name: str | None = None) -> Target:
-    """Where the port goes and how it runs; nothing is written yet."""
-    reference = runner.Implementation(project, project.reference).folder.resolve()
-    short, suffix = {"javascript": ("js", "js"), "typescript": ("ts", "ts"), "rust": ("rust", "rs")}[language]
-    folder = pathlib.Path(into).resolve() if into else reference.parent / f"{reference.name}-{suffix}"
+def _rust_target(project: Project, folder: pathlib.Path, app: str, name: str) -> Target:
+    """Return a Rust port: built with cargo, started as its release program."""
     cwd = _relative(folder, project.repo)
-    app = reference.name
-    if language == "rust":
-        package = _package(folder.name)
-        program = f"{cwd}/target/release/{package}" if pathlib.PurePosixPath(cwd).is_absolute() or ":" in cwd \
-            else f"{{repo}}/{cwd}/target/release/{package}"
-        spec = {"cwd": cwd, "cmd": [program], "env": {"PORT": "{port}"},
-                "build": ["cargo", "build", "--release", "--quiet"], "skip": ["target"]}
-        files = {"Cargo.toml": f'[package]\nname = "{package}"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n'
-                               "\n[dependencies]\n\n"
-                               "# Its own workspace: a Cargo.toml in a folder above doesn't take it in.\n[workspace]\n",
-                 "src/main.rs": MAIN_RS.format(app=app), ".gitignore": "target/\n"}
-        notes = NOTES["rust"].format(package=package)
-        if project.library:
-            crate = package.replace("-", "_")
-            files.update({"src/main.rs": _shim("library.rs").replace("{crate}", crate), "src/json.rs": _shim("json.rs"),
-                          "src/lib.rs": f"//! The port of the {app} library: see PORTING.md.\n"})
-            notes = LIBRARY_NOTES["rust"].format(crate=crate, package=package)
-        return Target(language, name or short, folder, spec, files, "cargo", ["Bash(cargo *)"], notes)
+    package = _package(folder.name)
+    program = (
+        f"{cwd}/target/release/{package}"
+        if pathlib.PurePosixPath(cwd).is_absolute() or ":" in cwd
+        else f"{{repo}}/{cwd}/target/release/{package}"
+    )
+    spec: Data = {
+        "cwd": cwd,
+        "cmd": [program],
+        "env": {"PORT": "{port}"},
+        "build": ["cargo", "build", "--release", "--quiet"],
+        "skip": ["target"],
+    }
+    files = {
+        "Cargo.toml": f'[package]\nname = "{package}"\nversion = "0.1.0"\nedition = "2021"\npublish = false\n'
+        "\n[dependencies]\n\n"
+        "# Its own workspace: a Cargo.toml in a folder above doesn't take it in.\n[workspace]\n",
+        "src/main.rs": MAIN_RS.format(app=app),
+        ".gitignore": "target/\n",
+    }
+    notes = NOTES["rust"].format(package=package)
+    if project.library:
+        crate = package.replace("-", "_")
+        files.update(
+            {
+                "src/main.rs": _shim("library.rs").replace("{crate}", crate),
+                "src/json.rs": _shim("json.rs"),
+                "src/lib.rs": f"//! The port of the {app} library: see PORTING.md.\n",
+            }
+        )
+        notes = LIBRARY_NOTES["rust"].format(crate=crate, package=package)
+    return Target("rust", name, folder, spec, files, "cargo", ["Bash(cargo *)"], notes)
+
+
+def _node_target(project: Project, language: str, folder: pathlib.Path, app: str, name: str) -> Target:
+    """Return a JavaScript or TypeScript port: started with node, no build step."""
+    cwd = _relative(folder, project.repo)
     ts = language == "typescript"
     entry = ("shim" if project.library else "server") + (".ts" if ts else ".js")
-    package = {"name": _package(folder.name), "private": True, "description": f"The port of {app}: see PORTING.md",
-               **({"type": "module"} if language == "typescript" else {}), "scripts": {"start": f"node {entry}"}}
-    files = {"package.json": json.dumps(package, indent=2) + "\n",
-             entry: (SERVER_TS if ts else SERVER_JS).format(app=app),
-             ".gitignore": "node_modules/\n"}
+    package = {
+        "name": _package(folder.name),
+        "private": True,
+        "description": f"The port of {app}: see PORTING.md",
+        **({"type": "module"} if language == "typescript" else {}),
+        "scripts": {"start": f"node {entry}"},
+    }
+    files = {
+        "package.json": json.dumps(package, indent=2) + "\n",
+        entry: (SERVER_TS if ts else SERVER_JS).format(app=app),
+        ".gitignore": "node_modules/\n",
+    }
     if project.library:
         files[entry] = _shim("library.ts" if ts else "library.js")
         files["index.ts" if ts else "index.js"] = f"// The port of the {app} library: see PORTING.md.\n" + (
-            "export {};\n" if ts else '"use strict";\n\nmodule.exports = {};\n')
-    spec = {"cwd": cwd, "cmd": ["node", entry], "env": {"PORT": "{port}"}}
-    return Target(language, name or short, folder, spec, files, "node", ["Bash(node *)", "Bash(npm *)"],
-                  LIBRARY_NOTES[language] if project.library else NOTES[language])
+            "export {};\n" if ts else '"use strict";\n\nmodule.exports = {};\n'
+        )
+    spec: Data = {"cwd": cwd, "cmd": ["node", entry], "env": {"PORT": "{port}"}}
+    return Target(
+        language,
+        name,
+        folder,
+        spec,
+        files,
+        "node",
+        ["Bash(node *)", "Bash(npm *)"],
+        LIBRARY_NOTES[language] if project.library else NOTES[language],
+    )
+
+
+def plan(project: Project, language: str, into: str | None = None, name: str | None = None) -> Target:
+    """Return where the port goes and how it runs; nothing is written yet."""
+    reference = runner.Implementation(project, project.reference).folder.resolve()
+    short, suffix = {"javascript": ("js", "js"), "typescript": ("ts", "ts"), "rust": ("rust", "rs")}[language]
+    folder = pathlib.Path(into).resolve() if into else reference.parent / f"{reference.name}-{suffix}"
+    if language == "rust":
+        return _rust_target(project, folder, reference.name, name or short)
+    return _node_target(project, language, folder, reference.name, name or short)
 
 
 def set_up(project: Project, target: Target) -> bool:
-    """Write the starting point (no file that exists is changed) and the impls.json entry; True when the folder
-    holds nothing but the starting point, so the first turn ports the whole app."""
+    """Write the starting point (no file that exists is changed) and the impls.json entry.
+
+    Return True when the folder holds nothing but the starting point, so the first turn ports the whole app.
+    """
     path = project.root / "impls.json"
-    spec = json.loads(path.read_text(encoding="utf-8"))
+    spec: Data = json.loads(path.read_text(encoding="utf-8"))
     if target.name in spec:
         there = (project.repo / spec[target.name].get("cwd", ".")).resolve()
         if there != target.folder:
-            raise SystemExit(f"impls.json has {target.name!r} already, for {there}: choose another --name")
+            msg = f"impls.json has {target.name!r} already, for {there}: choose another --name"
+            raise SystemExit(msg)
     else:
         spec[target.name] = target.spec  # one implementation a line
-        path.write_text("{\n" + ",\n".join(f"  {json.dumps(k)}: {json.dumps(v, ensure_ascii=False)}"
-                                           for k, v in spec.items()) + "\n}\n", encoding="utf-8")
+        _ = path.write_text(
+            "{\n"
+            + ",\n".join(f"  {json.dumps(k)}: {json.dumps(v, ensure_ascii=False)}" for k, v in spec.items())
+            + "\n}\n",
+            encoding="utf-8",
+        )
     for rel, text in target.files.items():
         file = target.folder / rel
         if not file.exists():
             file.parent.mkdir(parents=True, exist_ok=True)
-            file.write_text(text, encoding="utf-8", newline="\n")
+            _ = file.write_text(text, encoding="utf-8", newline="\n")
     ours = set(target.files) | {"PORTING.md", "package-lock.json", "Cargo.lock"}
     for file in target.folder.rglob("*"):
         rel = file.relative_to(target.folder).as_posix()
-        if file.is_file() and not re.match(r"(target|node_modules)/", rel) and (
-                rel not in ours or (rel in target.files and file.read_text(encoding="utf-8") != target.files[rel])):
+        if (
+            file.is_file()
+            and not re.match(r"(target|node_modules)/", rel)
+            and (rel not in ours or (rel in target.files and file.read_text(encoding="utf-8") != target.files[rel]))
+        ):
             return False
     return True
 
 
 def _contract_env(project: Project, target: Target) -> dict[str, str]:
-    """The environment every run gives the port, with sample values."""
-    sample = RunInfo(data_dir=pathlib.Path("<data>"), work=pathlib.Path("<work>"), port=SAMPLE_PORT,
-                     stub_url="<stub>", repo=project.repo)
+    """Return the environment every run gives the port, with sample values."""
+    sample = RunInfo(
+        data_dir=pathlib.Path("<data>"),
+        work=pathlib.Path("<work>"),
+        port=SAMPLE_PORT,
+        stub_url="<stub>",
+        repo=project.repo,
+    )
     try:
         env = {k: str(v) for k, v in (project.env(sample) if project.env else {}).items()}
-    except Exception:  # noqa: BLE001 - a project's env may need a real run; PORTING.md then points to it
+    except Exception:  # noqa: BLE001 (the project's env() may not take sample values; the table then leaves it out)
         env = {}
-    env.update({k: str(v).replace("{port}", str(SAMPLE_PORT)) for k, v in target.spec.get("env", {}).items()})
+    target_env: Data = target.spec.get("env", {})
+    env.update({k: str(v).replace("{port}", str(SAMPLE_PORT)) for k, v in target_env.items()})
     return {"PARITYRUN_STUB": "<stub>", **env}
 
 
+def _compared(project: Project, target: Target) -> list[str]:
+    """Return what a check compares, for PORTING.md."""
+    compared = (
+        [
+            (
+                'every call\'s `result`: the value it returns (an object as `{"$object": class, its public '
+                "properties}`, `null` for none), or the exception's `class` and `message` when it throws, and its "
+                "`output` when it prints"
+            )
+        ]
+        if project.library
+        else ["the status code of every answer"]
+    )
+    if project.redirects:
+        compared.append("the `Location` of every redirect")
+    if not project.library:
+        compared.append(
+            "pages as normalised lines (`html`): indentation, attribute order, entity spelling and "
+            "comments don't count; tags, attributes and text do"
+            if project.html
+            else "pages and text answers exactly"
+        )
+        compared.append("JSON answers value by value")
+    if project.databases or project.snapshot:
+        db = (
+            f"the SQLite database `{project.databases[0]}`"
+            if project.databases and not project.snapshot
+            else "the database"
+        )
+        compared.append(f"{db}: the same tables and columns, and the same rows")
+    skip: list[str] = target.spec.get("skip", [])
+    compared.append(
+        "every file it writes"
+        + (
+            " (in its data folder, and in its own folder as `app/<path>`: each run starts from a fresh copy of this "
+            "folder" + (f", without {', '.join(skip)}/" if skip else "") + ")"
+            if project.isolate
+            else " in its data folder"
+        )
+    )
+    compared.append("every request to an LLM or an outside service (they go to the stub at `PARITYRUN_STUB`)")
+    return compared
+
+
 def porting_md(project: Project, target: Target, project_file: pathlib.Path | None) -> str:
-    """The task for the agent: written into the port's folder, read at the start of every turn."""
+    """Return the task for the agent: written into the port's folder, read at the start of every turn."""
     reference = runner.Implementation(project, project.reference)
     root, name = project.root.as_posix(), target.name
     env = "\n".join(f"| `{k}` | `{v}` |" for k, v in _contract_env(project, target).items())
     steps = {n: len(runner.load(project, n)["steps"]) for n in runner.all_scenarios(project)}
-    scenarios = "\n".join(f"- `{n}`: {k} step{'s' * (k != 1)} in `{root}/scenarios/{n}.yaml`, the original's answers "
-                          f"in `{root}/golden/{n}/recording.json`" for n, k in steps.items())
-    compared = ["every call's `result`: the value it returns (an object as `{\"$object\": class, its public "
-                "properties}`, `null` for none), or the exception's `class` and `message` when it throws, and its "
-                "`output` when it prints"] if project.library else ["the status code of every answer"]
-    if project.redirects:
-        compared.append("the `Location` of every redirect")
-    if not project.library:
-        compared.append("pages as normalised lines (`html`): indentation, attribute order, entity spelling and "
-                        "comments don't count; tags, attributes and text do" if project.html else
-                        "pages and text answers exactly")
-        compared.append("JSON answers value by value")
-    if project.databases or project.snapshot:
-        db = f"the SQLite database `{project.databases[0]}`" if project.databases and not project.snapshot \
-            else "the database"
-        compared.append(f"{db}: the same tables and columns, and the same rows")
-    compared.append("every file it writes" + (
-        " (in its data folder, and in its own folder as `app/<path>`: each run starts from a fresh copy of this "
-        "folder" + (f", without {', '.join(target.spec.get('skip', []))}/" if target.spec.get("skip") else "") + ")"
-        if project.isolate else " in its data folder"))
-    compared.append("every request to an LLM or an outside service (they go to the stub at `PARITYRUN_STUB`)")
+    scenarios = "\n".join(
+        f"- `{n}`: {k} step{'s' * (k != 1)} in `{root}/scenarios/{n}.yaml`, the original's answers "
+        f"in `{root}/golden/{n}/recording.json`"
+        for n, k in steps.items()
+    )
+    compared = _compared(project, target)
     check = f"parityrun check --impl {name}"
     where = f" (`PARITYRUN_PROJECT` points it at `{project_file.as_posix()}`)" if project_file else ""
     language = LABELS[target.language]
     what = "library" if project.library else "app"
-    started = "served by parityrun's library shim" if project.library else \
-        f"started with `{' '.join(reference.spec['cmd'])}`"
-    order = ("Port the library's types and the helpers they share first, then every function and method, filling "
-             "the shim's tables as you go." if project.library else
-             "Port what every page shares first (routing, layout, data access), then the routes.")
-    calls = """
+    command: list[str] = reference.spec["cmd"]
+    started = "served by parityrun's library shim" if project.library else f"started with `{' '.join(command)}`"
+    order = (
+        "Port the library's types and the helpers they share first, then every function and method, filling "
+        "the shim's tables as you go."
+        if project.library
+        else "Port what every page shares first (routing, layout, data access), then the routes."
+    )
+    calls = (
+        """
 
 ## How the scenarios call it
 
 A step `fn: Shop\\slug` with `args: [...]` (a list, or named arguments as a map) calls that function, `fn:
 Shop\\Cart::fromJson` a static method; `new: Shop\\Cart` makes an object and `as: cart` keeps it, so that a later
-`fn: cart.add` calls its method. The names are always the original's: the shim turns them into yours.""" \
-        if project.library else ""
+`fn: cart.add` calls its method. The names are always the original's: the shim turns them into yours."""
+        if project.library
+        else ""
+    )
     return f"""# Port {reference.folder.name} to {language}
 
 Written by `parityrun port`, which rewrites it every time it runs.
@@ -316,7 +421,7 @@ Listen on 127.0.0.1 at `PORT`. parityrun waits until `GET {project.ready}` answe
 
 ## What is compared
 
-{chr(10).join(f'- {line}' for line in compared)}
+{chr(10).join(f"- {line}" for line in compared)}
 
 Random or run-specific values are replaced in recordings by placeholders such as `<id:1>`, `<time>`, `<data>`,
 `<service>` or a captured form token like `<csrf>`: produce the real kind of value (a new id, the time, a token).
@@ -344,9 +449,11 @@ ones.
 
 - Never change anything in `{root}` or in `{reference.folder.as_posix()}`: parityrun puts its folder back after every
   turn and stops when the original {what} changes.
-- Match the original's behaviour exactly, quirks and errors included: {"the same values, exceptions, output, database "
-  "rows and files" if project.library else "the same URLs, status codes, redirects, page text, JSON, database rows "
-  "and files"}. The original is the specification; don't fix or improve it.
+- Match the original's behaviour exactly, quirks and errors included: {
+        "the same values, exceptions, output, database rows and files"
+        if project.library
+        else "the same URLs, status codes, redirects, page text, JSON, database rows and files"
+    }. The original is the specification; don't fix or improve it.
 - Keep this folder runnable after every change.
 """
 
@@ -354,38 +461,44 @@ ones.
 @dataclasses.dataclass
 class Result:
     """One check of the port: passed and total checks per scenario, the failing checks, or why nothing ran."""
+
     scenarios: dict[str, tuple[int, int]]
-    failures: dict[str, list[dict]] = dataclasses.field(default_factory=dict)
+    failures: dict[str, list[Data]] = dataclasses.field(default_factory=dict[str, "list[Data]"])
     problem: str | None = None
     """The port didn't build or start: no scenario ran."""
 
     @property
     def passed(self) -> int:
+        """The checks that pass."""
         return sum(p for p, _ in self.scenarios.values())
 
     @property
     def total(self) -> int:
+        """All the checks."""
         return sum(t for _, t in self.scenarios.values())
 
     @property
     def parity(self) -> float:
+        """The checks that pass, in percent."""
         return 100 * self.passed / self.total if self.total else 0.0
 
     @property
     def red(self) -> list[str]:
+        """The scenarios with a failing check (all of them when nothing ran)."""
         return [n for n, (p, t) in self.scenarios.items() if self.problem or p < t]
 
     def summary(self) -> str:
+        """Return the parity and the red scenarios in a line."""
         red = ", ".join(f"{n} ({p}/{t})" for n, (p, t) in self.scenarios.items() if n in self.red)
         return f"parity {self.parity:.1f} % ({self.passed}/{self.total})" + (f"; red: {red}" if red else "")
 
 
 def totals(project: Project, names: list[str]) -> dict[str, int]:
-    """How many checks each scenario has: what the golden recording compares against itself."""
-    out = {}
+    """Return how many checks each scenario has: what the golden recording compares against itself."""
+    out: dict[str, int] = {}
     for name in names:
         folder = project.golden / name
-        golden = json.loads((folder / "recording.json").read_text(encoding="utf-8"))
+        golden: Data = json.loads((folder / "recording.json").read_text(encoding="utf-8"))
         out[name] = len(runner.checks(golden, golden, folder, folder, project))
     return out
 
@@ -397,33 +510,39 @@ def _tail(path: pathlib.Path, lines: int = 30) -> str:
         return "(no output)"
 
 
+def _any_status(_status: int) -> bool:
+    return True
+
+
 def starts(impl: runner.Implementation) -> str | None:
-    """None when the implementation starts and its ready path answers 200; else why not, with its output."""
+    """Return None when the implementation starts and its ready path answers 200; else why not, with its output."""
     project = impl.project
     work = pathlib.Path(tempfile.mkdtemp(prefix=f"{project.work_prefix}start-"))
     try:
         (work / "data").mkdir()
         app = work / "app" if project.isolate else None
         if app:
-            runner.copy_app(impl, app)
+            _ = runner.copy_app(impl, app)
         stub = Stub(project.stub_handler)
         try:
-            proc, base = impl.start(work / "data", stub.port, work / "service.log", cwd=app,
-                                    accept=lambda status: True)
+            proc, base = impl.start(work / "data", stub.port, cwd=app, accept=_any_status)
         except RuntimeError as exc:
             stub.close()
             return f"It doesn't start: {exc}. Its output:\n{_tail(work / 'service.log')}"
+        answer: int | str
         try:
             answer = httpx.get(f"{base}{project.ready}", headers=project.headers, timeout=30).status_code
         except httpx.HTTPError as exc:
             answer = str(exc)
         finally:
             proc.kill()
-            proc.wait()
+            _ = proc.wait()
             stub.close()
-        if answer != 200:
-            return (f"It starts, but GET {project.ready} answers {answer}, and parityrun waits for a 200 there before "
-                    f"every scenario. Its output:\n{_tail(work / 'service.log')}")
+        if answer != HTTPStatus.OK:
+            return (
+                f"It starts, but GET {project.ready} answers {answer}, and parityrun waits for a 200 there before "
+                f"every scenario. Its output:\n{_tail(work / 'service.log')}"
+            )
         return None
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -438,30 +557,33 @@ def evaluate(project: Project, name: str, names: list[str], expected: dict[str, 
     problem = starts(impl)
     if problem:
         return Result({n: (0, expected[n]) for n in names}, problem=problem)
-    from . import cli
-
     with contextlib.redirect_stdout(io.StringIO()):
-        cli.check(project, name, names)
-    report = json.loads((project.out / f"report-{name}.json").read_text(encoding="utf-8"))
+        _ = commands.check(project, name, names)
+    report: Data = json.loads((project.out / f"report-{name}.json").read_text(encoding="utf-8"))
     result = Result({})
     for scenario in names:
-        checks = report.get(scenario, [])
+        checks: list[Data] = report.get(scenario, [])
         result.scenarios[scenario] = (sum(c["ok"] for c in checks), len(checks) or expected[scenario])
         failing = [c for c in checks if not c["ok"]]
         for c in failing:
             log = re.search(r"see (.+?service\.log)", " ".join(c["detail"]))
             if c["name"] == "run" and log:  # the run's own output explains a crash
-                c["detail"] = c["detail"] + ["Its output:"] + _tail(pathlib.Path(log.group(1))).splitlines()
+                c["detail"] = [*c["detail"], "Its output:", *_tail(pathlib.Path(log.group(1))).splitlines()]
         if failing:
             result.failures[scenario] = failing
     return result
 
 
 class Focus:
-    """The red scenario the next turn works on: one at a time, in order, set aside after `patience` turns without
-    getting better. Stuck when every red one is set aside, or the port hasn't built or started for `patience` turns."""
+    """The red scenario the next turn works on: one at a time, in order.
+
+    A scenario is set aside after `patience` turns without getting better. Stuck when every red one is set aside, or
+    the port hasn't built or started for `patience` turns.
+    """
 
     def __init__(self, patience: int) -> None:
+        """Start with no scenario in focus."""
+        super().__init__()
         self.patience = patience
         self.current: str | None = None
         self.best = 0
@@ -471,6 +593,7 @@ class Focus:
         self.stuck = False
 
     def update(self, result: Result) -> None:
+        """Move on from the last check's result: stay on the scenario, set it aside, or take the next red one."""
         if result.problem:
             self.broken += 1
             self.stuck = self.broken >= self.patience
@@ -493,10 +616,15 @@ class Focus:
 
 
 class Guard:
-    """What the agent may not change: the parityrun folder (kept aside, put back after every turn; out/ and
-    __pycache__ are free) and the original app (its files' sizes and times; a change stops the loop)."""
+    """What the agent may not change: the parityrun folder and the original app.
+
+    The parityrun folder is kept aside and put back after every turn (out/ and __pycache__ are free); the original
+    app's files are known by their sizes and times, and a change stops the loop.
+    """
 
     def __init__(self, project: Project, reference: pathlib.Path, target: pathlib.Path) -> None:
+        """Keep the parityrun folder's files and the original app's sizes and times."""
+        super().__init__()
         self.root, self.reference, self.target = project.root, reference, target
         self.free = {project.out.resolve(), target.resolve()}
         self.skip = set(project.isolate_skip) | {"__pycache__"}
@@ -504,11 +632,16 @@ class Guard:
         self.stamps = self._stamps()
 
     def _files(self, folder: pathlib.Path) -> dict[str, pathlib.Path]:
-        found = {}
+        found: dict[str, pathlib.Path] = {}
         for dirpath, dirnames, filenames in os.walk(folder):
             here = pathlib.Path(dirpath)
-            dirnames[:] = [d for d in dirnames if d not in self.skip and (here / d).resolve() not in self.free
-                           and (folder == self.root or (here / d).resolve() != self.root.resolve())]
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in self.skip
+                and (here / d).resolve() not in self.free
+                and (folder == self.root or (here / d).resolve() != self.root.resolve())
+            ]
             for f in filenames:
                 found[(here / f).relative_to(folder).as_posix()] = here / f
         return found
@@ -517,13 +650,13 @@ class Guard:
         return {rel: (p.stat().st_size, p.stat().st_mtime_ns) for rel, p in self._files(self.reference).items()}
 
     def restore(self) -> list[str]:
-        """Put the parityrun folder back as it was; the paths that had changed."""
+        """Put the parityrun folder back as it was; return the paths that had changed."""
         now = self._files(self.root)
-        changed = []
+        changed: list[str] = []
         for rel, data in self.kept.items():
             if rel not in now or now[rel].read_bytes() != data:
                 (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
-                (self.root / rel).write_bytes(data)
+                _ = (self.root / rel).write_bytes(data)
                 changed.append(rel)
         for rel in sorted(set(now) - set(self.kept)):
             now[rel].unlink()
@@ -531,164 +664,342 @@ class Guard:
         return sorted(changed)
 
     def original_changed(self) -> list[str]:
-        """The original app's files that were added, changed or deleted."""
+        """Return the original app's files that were added, changed or deleted."""
         now = self._stamps()
         return sorted(rel for rel in set(now) | set(self.stamps) if now.get(rel) != self.stamps.get(rel))
 
 
 def agent_command(agent: str, target: Target, reads: list[pathlib.Path], prompt_file: pathlib.Path) -> list[str]:
-    """The agent's command line. Claude Code works in the port's folder, may read the original and the parityrun
-    folder, edit files and run the language's tools and `parityrun check`; any other tool is the user's command line,
-    with {prompt_file} and {folder} filled in. Every tool gets the prompt on stdin too."""
+    """Return the agent's command line.
+
+    Claude Code works in the port's folder, may read the original and the parityrun folder, edit files and run the
+    language's tools and `parityrun check`; any other tool is the user's command line, with {prompt_file} and
+    {folder} filled in. Every tool gets the prompt on stdin too.
+    """
     if agent == "claude":
-        allowed = ["Read", "Edit", "Write", "Glob", "Grep", "Bash(parityrun check)", "Bash(parityrun check *)",
-                   *target.allowed]
+        allowed = [
+            "Read",
+            "Edit",
+            "Write",
+            "Glob",
+            "Grep",
+            "Bash(parityrun check)",
+            "Bash(parityrun check *)",
+            *target.allowed,
+        ]
         cmd = ["claude", "-p", "--permission-mode", "acceptEdits", "--allowedTools", *allowed]
         for folder in reads:
             cmd += ["--add-dir", str(folder)]
-        return runner._command(cmd)
-    return runner._command([part.replace("{prompt_file}", str(prompt_file)).replace("{folder}", str(target.folder))
-                            for part in shlex.split(agent)])
+        return runner.command(cmd)
+    return runner.command(
+        [
+            part.replace("{prompt_file}", str(prompt_file)).replace("{folder}", str(target.folder))
+            for part in shlex.split(agent)
+        ]
+    )
 
 
-def run_agent(cmd: list[str], prompt: str, target: Target, env: dict, log: pathlib.Path,
-              minutes: float) -> int | str:
-    """One agent turn in the port's folder, its output into `log`: the exit code, or "timeout"."""
-    with open(log, "w", encoding="utf-8") as out:
+@dataclasses.dataclass(frozen=True)
+class Agent:
+    """How one turn's agent runs: its command line and environment, in which folder, for how long at most."""
+
+    cmd: list[str]
+    env: dict[str, str]
+    folder: pathlib.Path
+    minutes: float
+
+
+def run_agent(agent: Agent, prompt: str, log: pathlib.Path) -> int | str:
+    """Run one agent turn in the port's folder, its output into `log`; return the exit code, or "timeout"."""
+    with log.open("w", encoding="utf-8") as out:
         try:
-            return subprocess.run(cmd, cwd=target.folder, env=env, input=prompt.encode("utf-8"), stdout=out,
-                                  stderr=subprocess.STDOUT, timeout=minutes * 60).returncode
+            return subprocess.run(  # noqa: S603 (the agent the user chose)
+                agent.cmd,
+                cwd=agent.folder,
+                env=agent.env,
+                input=prompt.encode("utf-8"),
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                timeout=agent.minutes * 60,
+                check=False,
+            ).returncode
         except subprocess.TimeoutExpired:
             return "timeout"
         except OSError as exc:
-            raise SystemExit(f"Couldn't start the agent ({cmd[0]}): {exc}") from exc
+            msg = f"Couldn't start the agent ({agent.cmd[0]}): {exc}"
+            raise SystemExit(msg) from exc
 
 
-def prompt(turn: int, turns: int, project: Project, target: Target, result: Result | None, focus: Focus,
-           restored: list[str]) -> str:
-    """One turn's task: the whole app first; then how far the port is and one red scenario's failing checks."""
+@dataclasses.dataclass
+class Progress:
+    """Where the loop is: the last check's result, the scenario in focus and what the last turn had to put back."""
+
+    focus: Focus
+    result: Result | None = None
+    """None before the first check: the port is new."""
+    restored: list[str] = dataclasses.field(default_factory=list[str])
+
+
+def _failing_lines(result: Result, name: str, root: str, target: Target) -> list[str]:
+    """Return a red scenario's failing checks for the prompt."""
+    lines: list[str] = []
+    failing = result.failures.get(name, [])
+    for c in failing[:PROMPT_CHECKS]:
+        lines.append(f"  FAIL {c['name']}")
+        lines += [f"       {line}" for line in c["detail"][: RUN_DETAIL if c["name"] == "run" else DETAIL]]
+    if len(failing) > PROMPT_CHECKS:
+        lines.append(f"  ... {len(failing) - PROMPT_CHECKS} more in {root}/out/report-{target.name}.json")
+    return lines
+
+
+def prompt(turn: int, turns: int, project: Project, target: Target, progress: Progress) -> str:
+    """Return one turn's task: the whole app first; then how far the port is and one red scenario's failing checks."""
     check = f"parityrun check --impl {target.name}"
     head = f"Turn {turn} of at most {turns}. PORTING.md in this folder has the task and the rules: read it first.\n\n"
-    if restored:
-        head += ("parityrun put back what the last turn changed in its folder, which you may not change: "
-                 f"{', '.join(restored[:20])}.\n\n")
+    if progress.restored:
+        head += (
+            "parityrun put back what the last turn changed in its folder, which you may not change: "
+            f"{', '.join(progress.restored[:RESTORED_LISTED])}.\n\n"
+        )
+    result = progress.result
     if result is None:
-        whole = ("Port the whole library now: first its types and the helpers they share, then every function and "
-                 "method, filling the shim's tables as you go." if project.library else
-                 "Port the whole app now: first what every page shares (routing, layout, data access), then every "
-                 "route.")
+        whole = (
+            "Port the whole library now: first its types and the helpers they share, then every function and "
+            "method, filling the shim's tables as you go."
+            if project.library
+            else "Port the whole app now: first what every page shares (routing, layout, data access), then every "
+            "route."
+        )
         return head + f"{whole} Once it runs, run `{check}` and fix what it reports.\n"
     head += f"Where the port is now: {result.summary()}.\n\n"
     if result.problem:
         return head + f"Nothing could be checked. {result.problem}\n\nFix that first, then run `{check}`.\n"
-    name, root = focus.current, project.root.as_posix()
+    name, root = progress.focus.current, project.root.as_posix()
     if name is None:
         return head + f"Run `{check}` and fix what it reports.\n"
     green = [n for n in result.scenarios if n not in result.red]
-    lines = [f"This turn: make scenario `{name}` pass" + (f", and keep {', '.join(green)} green." if green else "."),
-             f"  its steps:              {root}/scenarios/{name}.yaml",
-             f"  the original's answers: {root}/golden/{name}/recording.json",
-             f"  yours, last check:      {root}/out/{target.name}/{name}/recording.json",
-             "", "Its failing checks (each difference is `path: expected != yours`):"]
-    failing = result.failures.get(name, [])
-    for c in failing[:PROMPT_CHECKS]:
-        lines.append(f"  FAIL {c['name']}")
-        lines += [f"       {line}" for line in c["detail"][:40 if c["name"] == "run" else 8]]
-    if len(failing) > PROMPT_CHECKS:
-        lines.append(f"  ... {len(failing) - PROMPT_CHECKS} more in {root}/out/report-{target.name}.json")
-    lines += ["", f"Check it with `{check} {name}`, then every scenario with `{check}`."]
+    lines = [
+        f"This turn: make scenario `{name}` pass" + (f", and keep {', '.join(green)} green." if green else "."),
+        f"  its steps:              {root}/scenarios/{name}.yaml",
+        f"  the original's answers: {root}/golden/{name}/recording.json",
+        f"  yours, last check:      {root}/out/{target.name}/{name}/recording.json",
+        "",
+        "Its failing checks (each difference is `path: expected != yours`):",
+        *_failing_lines(result, name, root, target),
+        "",
+        f"Check it with `{check} {name}`, then every scenario with `{check}`.",
+    ]
     return head + "\n".join(lines) + "\n"
 
 
-def port(project: Project, language: str, into: str | None = None, name: str | None = None, agent: str = "claude",
-         turns: int = 20, patience: int = 3, turn_minutes: float = 60, setup_only: bool = False,
-         project_file: pathlib.Path | None = None) -> int:
-    """Set the port up, then loop agent turns until parity is 100 %: 0 then, 1 when it stops short, 2 when the agent
-    changed the original app."""
-    names, turns = runner.all_scenarios(project), max(turns, 1)
+@dataclasses.dataclass(frozen=True)
+class Options:
+    """What `parityrun port` was asked: its command-line options."""
+
+    language: str
+    into: str | None = None
+    name: str | None = None
+    agent: str = "claude"
+    """claude (Claude Code), or the user's own tool's command line with {prompt_file}."""
+    turns: int = 20
+    patience: int = 3
+    turn_minutes: float = 60
+    setup_only: bool = False
+    project_file: pathlib.Path | None = None
+    """The project file the agent's `parityrun check` uses (PARITYRUN_PROJECT)."""
+
+
+def _recorded(project: Project) -> list[str]:
+    """Return the scenarios; SystemExit when there are none or one isn't recorded yet."""
+    names = runner.all_scenarios(project)
     if not names:
-        raise SystemExit("No scenarios yet: run `parityrun capture` (or write scenarios/), then `parityrun record`.")
+        msg = "No scenarios yet: run `parityrun capture` (or write scenarios/), then `parityrun record`."
+        raise SystemExit(msg)
     missing = [n for n in names if not (project.golden / n / "recording.json").exists()]
     if missing:
-        raise SystemExit(f"Record first: `parityrun record` ({', '.join(missing)} not recorded yet).")
-    target = plan(project, language, into, name)
-    fresh = set_up(project, target)
-    (target.folder / "PORTING.md").write_text(porting_md(project, target, project_file), encoding="utf-8",
-                                              newline="\n")
-    print(f"The {LABELS[target.language]} port is in {target.folder} "
-          f"({'new' if fresh else 'going on from what is there'}); impls.json calls it {target.name}.")
-    if setup_only:
-        print(f"Wrote PORTING.md there, the task for your AI tool. Check the port with: parityrun check --impl "
-              f"{target.name}")
-        return 0
+        msg = f"Record first: `parityrun record` ({', '.join(missing)} not recorded yet)."
+        raise SystemExit(msg)
+    return names
+
+
+def _tools_there(target: Target, agent: str) -> None:
+    """SystemExit when the port's tool or Claude Code isn't installed."""
     if not shutil.which(target.tool):
-        raise SystemExit(f"{target.tool} isn't installed (or not on PATH): the port can't run without it.")
+        msg = f"{target.tool} isn't installed (or not on PATH): the port can't run without it."
+        raise SystemExit(msg)
     if agent == "claude" and not shutil.which("claude"):
-        raise SystemExit("Claude Code isn't installed (https://claude.com/claude-code), or use your own AI tool: "
-                         '--agent "yourtool ... {prompt_file}"')
+        msg = (
+            "Claude Code isn't installed (https://claude.com/claude-code), or use your own AI tool: "
+            '--agent "yourtool ... {prompt_file}"'
+        )
+        raise SystemExit(msg)
+
+
+def _agent_env(project_file: pathlib.Path | None) -> dict[str, str]:
+    """Return the agent's environment: parityrun on its PATH, pointed at the project file."""
+    parityrun = shutil.which("parityrun")
+    scripts = [sysconfig.get_path("scripts")] + ([str(pathlib.Path(parityrun).parent)] if parityrun else [])
+    return {
+        **os.environ,
+        "PATH": os.pathsep.join([*scripts, os.environ.get("PATH", "")]),
+        **({"PARITYRUN_PROJECT": str(project_file)} if project_file else {}),
+    }
+
+
+def _doing(result: Result | None, working_on: str | None) -> str:
+    if result is None:
+        return "porting the whole app"
+    return f"working on {working_on}" if working_on else "fixing what fails"
+
+
+@dataclasses.dataclass
+class _Loop:
+    """The turns of one `parityrun port`."""
+
+    project: Project
+    target: Target
+    options: Options
+    names: list[str]
+    expected: dict[str, int]
+    guard: Guard
+    progress: Progress
+    reference: pathlib.Path
+    env: dict[str, str]
+
+    @property
+    def logs(self) -> pathlib.Path:
+        return self.project.out / "port"
+
+    def run(self, turns: int) -> int | None:
+        """Run turns until parity is 100 % (0), the agent changes the original app (2) or the loop stops (None)."""
+        started = time.time()
+        for turn in range(1, turns + 1):
+            code = self.turn(turn, turns, started)
+            if code is not None:
+                return code
+            if self.progress.focus.stuck:
+                break
+        return None
+
+    def turn(self, turn: int, turns: int, started: float) -> int | None:
+        """Run one agent turn and check the port; return 0 or 2 when the loop ends there."""
+        project, target, progress = self.project, self.target, self.progress
+        task = prompt(turn, turns, project, target, progress)
+        prompt_file = self.logs / f"turn-{turn}.prompt.md"
+        _ = prompt_file.write_text(task, encoding="utf-8", newline="\n")
+        working_on = progress.focus.current if progress.result else None
+        print(f"Turn {turn}: {_doing(progress.result, working_on)} ...", flush=True)
+        began = time.time()
+        cmd = agent_command(self.options.agent, target, [self.reference, project.root], prompt_file)
+        agent = Agent(cmd, self.env, target.folder, self.options.turn_minutes)
+        exit_code = run_agent(agent, task, self.logs / f"turn-{turn}.log")
+        seconds = time.time() - began
+        progress.restored = self.guard.restore()
+        touched = self.guard.original_changed()
+        if touched:
+            print(
+                f"Stopped: the agent changed the original app ({', '.join(touched[:10])}). Undo that (e.g. "
+                f"git checkout) before porting on."
+            )
+            return 2
+        result = evaluate(project, target.name, self.names, self.expected)
+        progress.result = result
+        progress.focus.update(result)
+        self._log(turn, working_on, exit_code, seconds)
+        agent_said = "" if exit_code == 0 else f", the agent exited with {exit_code}"
+        print(
+            f"  turn {turn}: {seconds / 60:.1f} min{agent_said}; "
+            + ("it doesn't build or start" if result.problem else result.summary()),
+            flush=True,
+        )
+        if progress.restored:
+            print(f"  put back in {project.root.name}/: {', '.join(progress.restored[:10])}")
+        if not result.red:
+            print(
+                f"\n{target.name}: parity 100 % after {turn} turn{'s' * (turn != 1)} "
+                f"({(time.time() - started) / 60:.0f} min). The port is in {target.folder}; check it any time "
+                f"with: parityrun check --impl {target.name}"
+            )
+            return 0
+        return None
+
+    def _log(self, turn: int, working_on: str | None, exit_code: int | str, seconds: float) -> None:
+        """Add the turn to out/port-log.jsonl."""
+        result = self.progress.result
+        if result is None:
+            return
+        entry = {
+            "time": dt.datetime.now().astimezone().replace(tzinfo=None).isoformat(timespec="seconds"),
+            "impl": self.target.name,
+            "turn": turn,
+            "focus": working_on,
+            "agent_exit": exit_code,
+            "agent_seconds": round(seconds, 1),
+            "parity": round(result.parity, 2),
+            "passed": result.passed,
+            "total": result.total,
+            "scenarios": {n: list(v) for n, v in result.scenarios.items()},
+            "problem": result.problem,
+            "restored": self.progress.restored,
+        }
+        with (self.project.out / "port-log.jsonl").open("a", encoding="utf-8") as log:
+            _ = log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def stopped(self, turns: int) -> str:
+        """Return why the loop stopped short."""
+        focus, patience = self.progress.focus, self.options.patience
+        if not focus.stuck:
+            return f"{turns} turns are used up"
+        if self.progress.result and self.progress.result.problem:
+            return f"it hasn't built or started for {patience} turns"
+        return f"{', '.join(focus.set_aside)} stayed red for {patience} turns each without getting better"
+
+
+def port(project: Project, options: Options) -> int:
+    """Set the port up, then loop agent turns until parity is 100 %.
+
+    Return 0 then, 1 when it stops short, 2 when the agent changed the original app.
+    """
+    names, turns = _recorded(project), max(options.turns, 1)
+    target = plan(project, options.language, options.into, options.name)
+    fresh = set_up(project, target)
+    task = porting_md(project, target, options.project_file)
+    _ = (target.folder / "PORTING.md").write_text(task, encoding="utf-8", newline="\n")
+    print(
+        f"The {LABELS[target.language]} port is in {target.folder} "
+        f"({'new' if fresh else 'going on from what is there'}); impls.json calls it {target.name}."
+    )
+    if options.setup_only:
+        print(
+            f"Wrote PORTING.md there, the task for your AI tool. Check the port with: parityrun check --impl "
+            f"{target.name}"
+        )
+        return 0
+    _tools_there(target, options.agent)
     reference = runner.Implementation(project, project.reference).folder.resolve()
-    logs = project.out / "port"
-    logs.mkdir(parents=True, exist_ok=True)
-    scripts = [sysconfig.get_path("scripts")] + ([os.path.dirname(shutil.which("parityrun"))]
-                                                  if shutil.which("parityrun") else [])
-    env = {**os.environ, "PATH": os.pathsep.join(scripts + [os.environ.get("PATH", "")]),
-           **({"PARITYRUN_PROJECT": str(project_file)} if project_file else {})}
+    (project.out / "port").mkdir(parents=True, exist_ok=True)
+    env = _agent_env(options.project_file)
     expected = totals(project, names)
     guard = Guard(project, reference, target.folder)
-    focus = Focus(patience)
-    result = None if fresh else evaluate(project, target.name, names, expected)
-    if result:
+    progress = Progress(Focus(options.patience))
+    if not fresh:
+        result = evaluate(project, target.name, names, expected)
+        progress.result = result
         print(f"Now: {result.summary()}")
         if not result.red:
             print(f"{target.name}: parity 100 % already.")
             return 0
-        focus.update(result)
-    started, restored = time.time(), []
+        progress.focus.update(result)
+    loop = _Loop(project, target, options, names, expected, guard, progress, reference, env)
     try:
-        for turn in range(1, turns + 1):
-            task = prompt(turn, turns, project, target, result, focus, restored)
-            prompt_file = logs / f"turn-{turn}.prompt.md"
-            prompt_file.write_text(task, encoding="utf-8", newline="\n")
-            working_on = focus.current if result else None
-            print(f"Turn {turn}: " + ("porting the whole app" if result is None else
-                                      f"working on {working_on}" if working_on else "fixing what fails")
-                  + " ...", flush=True)
-            began = time.time()
-            exit_code = run_agent(agent_command(agent, target, [reference, project.root], prompt_file), task,
-                                  target, env, logs / f"turn-{turn}.log", turn_minutes)
-            seconds = time.time() - began
-            restored = guard.restore()
-            touched = guard.original_changed()
-            if touched:
-                print(f"Stopped: the agent changed the original app ({', '.join(touched[:10])}). Undo that (e.g. "
-                      f"git checkout) before porting on.")
-                return 2
-            result = evaluate(project, target.name, names, expected)
-            focus.update(result)
-            with open(project.out / "port-log.jsonl", "a", encoding="utf-8") as log:
-                log.write(json.dumps({
-                    "time": datetime.datetime.now().isoformat(timespec="seconds"), "impl": target.name, "turn": turn,
-                    "focus": working_on, "agent_exit": exit_code, "agent_seconds": round(seconds, 1),
-                    "parity": round(result.parity, 2), "passed": result.passed, "total": result.total,
-                    "scenarios": {n: list(v) for n, v in result.scenarios.items()}, "problem": result.problem,
-                    "restored": restored}, ensure_ascii=False) + "\n")
-            agent_said = "" if exit_code == 0 else f", the agent exited with {exit_code}"
-            print(f"  turn {turn}: {seconds / 60:.1f} min{agent_said}; " + (
-                "it doesn't build or start" if result.problem else result.summary()), flush=True)
-            if restored:
-                print(f"  put back in {project.root.name}/: {', '.join(restored[:10])}")
-            if not result.red:
-                print(f"\n{target.name}: parity 100 % after {turn} turn{'s' * (turn != 1)} "
-                      f"({(time.time() - started) / 60:.0f} min). The port is in {target.folder}; check it any time "
-                      f"with: parityrun check --impl {target.name}")
-                return 0
-            if focus.stuck:
-                break
+        code = loop.run(turns)
     finally:
-        guard.restore()
-    why = (f"{turns} turns are used up" if not focus.stuck else
-           f"it hasn't built or started for {patience} turns" if result.problem else
-           f"{', '.join(focus.set_aside)} stayed red for {patience} turns each without getting better")
-    print(f"\nStopped: {why}. {target.name}: {result.summary()}.\nWhat fails: {project.out}/report-{target.name}.json; "
-          f"every turn: {project.out}/port-log.jsonl. Run the same `parityrun port` again to go on from here.")
+        _ = guard.restore()
+    if code is not None:
+        return code
+    summary = progress.result.summary() if progress.result else "not checked"
+    print(
+        f"\nStopped: {loop.stopped(turns)}. {target.name}: {summary}.\nWhat fails: {project.out}/report-{target.name}"
+        f".json; every turn: {project.out}/port-log.jsonl. Run the same `parityrun port` again to go on from here."
+    )
     return 1

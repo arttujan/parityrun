@@ -15,8 +15,12 @@ import pathlib
 import re
 import shutil
 import subprocess
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from .routes import SKIP_DIRS
+
+if TYPE_CHECKING:
+    from .jsontypes import Data
 
 PREPEND = r"""<?php
 // parityrun: this request's line coverage, written when it ends (PCOV, else Xdebug).
@@ -56,25 +60,34 @@ PREPEND = r"""<?php
 })();
 """
 
+DEAD = -2  # a line of dead code, never runnable
+FULL = 100.0
+NEVER_LISTED = 8  # the files nothing loaded that a short summary names
 PROBE = "echo extension_loaded('pcov') ? 'pcov' : (extension_loaded('xdebug') ? 'xdebug' : '');"
 _tools: dict[str, tuple[list[str], str | None]] = {}
 _warned: set[str] = set()
 
 
 def detect(php: str) -> tuple[list[str], str | None]:
-    """How this php loads a coverage tool: (the -d options that load it, "pcov" or "xdebug"), or ([], None)."""
+    """Return how this php loads a coverage tool: (the -d options that load it, "pcov" or "xdebug"), or ([], None)."""
     if php in _tools:
         return _tools[php]
-    ext = pathlib.Path(shutil.which(php) or php).resolve().parent / "ext"
-    tries = [[], ["-d", "extension=pcov"], ["-d", f"extension={ext / 'php_pcov.dll'}"],
-             ["-d", "zend_extension=xdebug"], ["-d", f"zend_extension={ext / 'php_xdebug.dll'}"]]
+    exe = shutil.which(php) or php
+    ext = pathlib.Path(exe).resolve().parent / "ext"
+    tries: list[list[str]] = [
+        [],
+        ["-d", "extension=pcov"],
+        ["-d", f"extension={ext / 'php_pcov.dll'}"],
+        ["-d", "zend_extension=xdebug"],
+        ["-d", f"zend_extension={ext / 'php_xdebug.dll'}"],
+    ]
     found: tuple[list[str], str | None] = ([], None)
     for load in tries:
         if any(".dll" in part for part in load) and not pathlib.Path(load[1].split("=", 1)[1]).exists():
             continue
         try:
-            out = subprocess.run([shutil.which(php) or php, *load, "-r", PROBE], capture_output=True, text=True,
-                                 timeout=30).stdout.strip()
+            probe = [exe, *load, "-r", PROBE]
+            out = subprocess.run(probe, capture_output=True, text=True, timeout=30, check=False).stdout.strip()  # noqa: S603 (the project's own php)
         except (OSError, subprocess.SubprocessError):
             break
         if out in ("pcov", "xdebug"):
@@ -85,83 +98,96 @@ def detect(php: str) -> tuple[list[str], str | None]:
 
 
 def is_php(cmd: list[str]) -> bool:
+    """Tell whether a command runs PHP."""
     return bool(cmd) and pathlib.Path(cmd[0]).stem.lower() == "php"
 
 
 def php_command(cmd: list[str], root: pathlib.Path, prepend: pathlib.Path) -> list[str]:
-    """The php command with coverage on (the prepend file written), or as it was when PHP has no coverage tool."""
+    """Return the php command with coverage on (the prepend file written), or as it was without a coverage tool."""
     load, tool = detect(cmd[0])
     if tool is None:
         if cmd[0] not in _warned:
             _warned.add(cmd[0])
-            print("note: PHP code coverage needs the PCOV (or Xdebug) extension, which this PHP doesn't have: "
-                  "https://github.com/krakjoe/pcov (Windows: downloads.php.net/~windows/pecl/releases/pcov/)",
-                  flush=True)
+            print(
+                "note: PHP code coverage needs the PCOV (or Xdebug) extension, which this PHP doesn't have: "
+                "https://github.com/krakjoe/pcov (Windows: downloads.php.net/~windows/pecl/releases/pcov/)",
+                flush=True,
+            )
         return cmd
-    prepend.write_text(PREPEND, encoding="utf-8")
-    on = ["-d", "pcov.enabled=1", "-d", f"pcov.directory={os.path.realpath(root)}"] if tool == "pcov" else \
-        ["-d", "xdebug.mode=coverage"]  # PCOV compares PHP's own (long) paths with it
+    _ = prepend.write_text(PREPEND, encoding="utf-8")
+    on = (
+        ["-d", "pcov.enabled=1", "-d", f"pcov.directory={os.path.realpath(root)}"]
+        if tool == "pcov"
+        else ["-d", "xdebug.mode=coverage"]
+    )  # PCOV compares PHP's own (long) paths with it
     return [cmd[0], *load, *on, "-d", f"auto_prepend_file={prepend}", *cmd[1:]]
 
 
 def _relative(path: str, root: pathlib.Path) -> str | None:
-    """A covered file as a path inside the app, or None for one outside it or in vendor/ and the like."""
+    """Return a covered file as a path inside the app, or None for one outside it or in vendor/ and the like."""
     full, base = os.path.realpath(path), os.path.realpath(root)  # a temp folder may come as C:\Users\ARTTU~1
     if not os.path.normcase(full).startswith(os.path.normcase(base) + os.sep):
         return None
-    rel = pathlib.PurePath(full[len(base) + 1:]).as_posix()
+    rel = pathlib.PurePath(full[len(base) + 1 :]).as_posix()
     return None if set(rel.split("/")[:-1]) & SKIP_DIRS else rel
 
 
-def collect(folder: pathlib.Path, root: pathlib.Path) -> dict | None:
-    """Every request's coverage in `folder` merged: {"tool", "files": {path: {"lines": [...], "run": [...]}}}."""
+def _report(tool: str | None, files: dict[str, dict[str, set[int]]]) -> Data:
+    return {
+        "tool": tool,
+        "files": {rel: {"lines": sorted(e["lines"]), "run": sorted(e["run"])} for rel, e in sorted(files.items())},
+    }
+
+
+def collect(folder: pathlib.Path, root: pathlib.Path) -> Data | None:
+    """Return every request's coverage in `folder` merged: {"tool", "files": {path: {"lines": [...], "run": [...]}}}."""
     if not folder.exists():
         return None
-    tool, files = None, {}
+    tool: str | None = None
+    files: dict[str, dict[str, set[int]]] = {}
     for path in sorted(folder.glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data: Data = json.loads(path.read_text(encoding="utf-8"))
         tool = data.get("tool") or tool
-        for name, lines in (data.get("files") or {}).items():
+        found: Data = data.get("files") or {}
+        for name, lines in found.items():
             rel = _relative(name, root)
             if rel is None or not isinstance(lines, dict):
                 continue
             entry = files.setdefault(rel, {"lines": set(), "run": set()})
-            for line, code in lines.items():
-                if code != -2:  # -2: dead code, never runnable
+            for line, code in cast("Data", lines).items():
+                if code != DEAD:
                     entry["lines"].add(int(line))
                 if code > 0:
                     entry["run"].add(int(line))
     if tool is None:
         return None
-    return {"tool": tool, "files": {rel: {"lines": sorted(e["lines"]), "run": sorted(e["run"])}
-                                    for rel, e in sorted(files.items())}}
+    return _report(tool, files)
 
 
-def merge(reports: list[dict]) -> dict:
-    """The coverage of several scenarios together."""
-    files: dict[str, dict[str, set]] = {}
+def merge(reports: list[Data]) -> Data:
+    """Return the coverage of several scenarios together."""
+    files: dict[str, dict[str, set[int]]] = {}
     for report in reports:
         for rel, e in report["files"].items():
             entry = files.setdefault(rel, {"lines": set(), "run": set()})
             entry["lines"].update(e["lines"])
             entry["run"].update(e["run"])
-    tool = next((r["tool"] for r in reports), None)
-    return {"tool": tool, "files": {rel: {"lines": sorted(e["lines"]), "run": sorted(e["run"])}
-                                    for rel, e in sorted(files.items())}}
+    tool: str | None = next((r["tool"] for r in reports), None)
+    return _report(tool, files)
 
 
 CODELESS = re.compile(r"^(?:<\?php|\?>|[{}()\[\];,]+|//.*|#(?!\[).*|/\*.*|\*.*|use\s.*|namespace\s.*)?$")
 
 
 def estimate(path: pathlib.Path) -> int:
-    """About how many runnable lines a PHP file no request loaded has (blank lines, comments and braces left out)."""
+    """Estimate how many runnable lines a PHP file no request loaded has (no blank lines, comments or braces)."""
     text = path.read_text(encoding="utf-8", errors="replace")
     return sum(1 for line in text.splitlines() if not CODELESS.match(line.strip()))
 
 
 def php_files(root: pathlib.Path) -> list[str]:
-    """The app's own PHP files (not vendor/, tests/ and the like)."""
-    out = []
+    """Return the app's own PHP files (not vendor/, tests/ and the like)."""
+    out: list[str] = []
     for path in sorted(root.rglob("*.php")):
         rel = path.relative_to(root).as_posix()
         if path.is_file() and not set(rel.split("/")[:-1]) & SKIP_DIRS:
@@ -170,8 +196,9 @@ def php_files(root: pathlib.Path) -> list[str]:
 
 
 def ranges(lines: list[int]) -> str:
-    """[3, 4, 5, 9] -> "3-5, 9"."""
-    out, start = [], None
+    """Return line numbers as ranges: [3, 4, 5, 9] -> "3-5, 9"."""
+    out: list[str] = []
+    start: int | None = None
     for k, line in enumerate(lines):
         if start is None:
             start = line
@@ -181,42 +208,65 @@ def ranges(lines: list[int]) -> str:
     return ", ".join(out)
 
 
-def summary(report: dict, root: pathlib.Path) -> dict:
-    """Totals and one row per file, the least covered first: {percent, run, lines, rows: [(file, %, run, lines,
-    missed, loaded)]}; files nothing loaded are rows with an estimate."""
-    rows = []
+class Row(NamedTuple):
+    """One file's coverage."""
+
+    file: str
+    percent: float
+    run: int
+    lines: int
+    missed: list[int]
+    loaded: bool
+    """False: no request loaded the file; `lines` is an estimate."""
+
+
+def summary(report: Data, root: pathlib.Path) -> Data:
+    """Return the totals and one row per file, the least covered first: {percent, run, lines, rows: [Row]}.
+
+    Files nothing loaded are rows with an estimate.
+    """
+    rows: list[Row] = []
     for rel, e in report["files"].items():
-        missed = sorted(set(e["lines"]) - set(e["run"]))
-        rows.append((rel, 100 * len(e["run"]) / len(e["lines"]) if e["lines"] else 100.0, len(e["run"]),
-                     len(e["lines"]), missed, True))
-    for rel in php_files(root):
-        if rel not in report["files"]:
-            rows.append((rel, 0.0, 0, estimate(root / rel), [], False))
+        lines: list[int] = e["lines"]
+        run: list[int] = e["run"]
+        missed = sorted(set(lines) - set(run))
+        percent = FULL * len(run) / len(lines) if lines else FULL
+        rows.append(Row(rel, percent, len(run), len(lines), missed, loaded=True))
+    rows += [
+        Row(rel, 0.0, 0, estimate(root / rel), [], loaded=False)
+        for rel in php_files(root)
+        if rel not in report["files"]
+    ]
     rows = [r for r in rows if r[3]]
-    run, lines = sum(r[2] for r in rows), sum(r[3] for r in rows)
+    run_total, lines_total = sum(r.run for r in rows), sum(r.lines for r in rows)
     rows.sort(key=lambda r: (r[1], r[0]))
-    return {"percent": 100 * run / lines if lines else 0.0, "run": run, "lines": lines, "rows": rows}
+    percent = 100 * run_total / lines_total if lines_total else 0.0
+    return {"percent": percent, "run": run_total, "lines": lines_total, "rows": rows}
 
 
-def golden_reports(golden: pathlib.Path) -> list[dict]:
+def golden_reports(golden: pathlib.Path) -> list[Data]:
+    """Return the coverage kept beside every recording."""
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(golden.glob("*/coverage.json"))]
 
 
-def show(golden: pathlib.Path, root: pathlib.Path, detail: bool = True) -> bool:
+def show(golden: pathlib.Path, root: pathlib.Path, *, detail: bool = True) -> bool:
     """Print the code coverage of every recorded scenario; False when there is none."""
     reports = golden_reports(golden)
     if not reports:
         return False
     s = summary(merge(reports), root)
-    print(f"PHP code covered: {s['percent']:.1f} % of lines ({s['run']}/{s['lines']}) by {len(reports)} "
-          f"scenario{'s' * (len(reports) != 1)}")
-    never = [r[0] for r in s["rows"] if not r[5]]
+    print(
+        f"PHP code covered: {s['percent']:.1f} % of lines ({s['run']}/{s['lines']}) by {len(reports)} "
+        f"scenario{'s' * (len(reports) != 1)}"
+    )
+    rows: list[Row] = s["rows"]
+    never = [r.file for r in rows if not r.loaded]
     if detail:
-        width = max(len(r[0]) for r in s["rows"])
-        for rel, percent, _, lines, missed, loaded in s["rows"]:
-            if percent < 100:
+        width = max(len(r.file) for r in rows)
+        for rel, percent, _, lines, missed, loaded in rows:
+            if percent < FULL:
                 what = f"not run: lines {ranges(missed)}" if loaded else f"never loaded (~{lines} lines)"
                 print(f"  {rel.ljust(width)}  {percent:5.1f} %  {what}")
     elif never:
-        print(f"  never loaded: {', '.join(never[:8])}{' ...' if len(never) > 8 else ''}")
+        print(f"  never loaded: {', '.join(never[:NEVER_LISTED])}{' ...' if len(never) > NEVER_LISTED else ''}")
     return True

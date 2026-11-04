@@ -5,7 +5,8 @@ import pathlib
 from parityrun import Project, RunInfo
 
 
-def env(run: RunInfo) -> dict:
+def env(run: RunInfo) -> dict[str, str]:
+    """Return the notes' data folder and the LLM (the stub)."""
     return {"NOTES_DATA": str(run.data_dir), "LLM_BASE_URL": f"{run.stub_url}/v1", "LLM_MODEL": "conformance"}
 
 
