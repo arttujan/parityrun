@@ -101,9 +101,9 @@ def test_php_starts_with_coverage_only_when_it_has_a_tool(
         "-d",
         "pcov.enabled=1",
         "-d",
-        f"pcov.directory={os.path.realpath(tmp_path)}",
+        f'pcov.directory="{os.path.realpath(tmp_path)}"',  # quoted: a short path's ~ would cut it
         "-d",
-        f"auto_prepend_file={tmp_path / 'prepend.php'}",
+        f'auto_prepend_file="{tmp_path / "prepend.php"}"',
         "-S",
         "127.0.0.1:1",
         "-t",

@@ -68,6 +68,15 @@ _tools: dict[str, tuple[list[str], str | None]] = {}
 _warned: set[str] = set()
 
 
+def _ini(path: str | pathlib.Path) -> str:
+    """Return a path as a quoted php.ini value for -d.
+
+    Unquoted, characters such as the ~ of a Windows short path (C:/Users/RUNNER~1/...) are ini operators, and the
+    path is cut there.
+    """
+    return f'"{path}"'
+
+
 def detect(php: str) -> tuple[list[str], str | None]:
     """Return how this php loads a coverage tool: (the -d options that load it, "pcov" or "xdebug"), or ([], None)."""
     if php in _tools:
@@ -77,13 +86,13 @@ def detect(php: str) -> tuple[list[str], str | None]:
     tries: list[list[str]] = [
         [],
         ["-d", "extension=pcov"],
-        ["-d", f"extension={ext / 'php_pcov.dll'}"],
+        ["-d", f"extension={_ini(ext / 'php_pcov.dll')}"],
         ["-d", "zend_extension=xdebug"],
-        ["-d", f"zend_extension={ext / 'php_xdebug.dll'}"],
+        ["-d", f"zend_extension={_ini(ext / 'php_xdebug.dll')}"],
     ]
     found: tuple[list[str], str | None] = ([], None)
     for load in tries:
-        if any(".dll" in part for part in load) and not pathlib.Path(load[1].split("=", 1)[1]).exists():
+        if any(".dll" in part for part in load) and not pathlib.Path(load[1].split("=", 1)[1].strip('"')).exists():
             continue
         try:
             probe = [exe, *load, "-r", PROBE]
@@ -116,11 +125,11 @@ def php_command(cmd: list[str], root: pathlib.Path, prepend: pathlib.Path) -> li
         return cmd
     _ = prepend.write_text(PREPEND, encoding="utf-8")
     on = (
-        ["-d", "pcov.enabled=1", "-d", f"pcov.directory={os.path.realpath(root)}"]
+        ["-d", "pcov.enabled=1", "-d", f"pcov.directory={_ini(os.path.realpath(root))}"]
         if tool == "pcov"
         else ["-d", "xdebug.mode=coverage"]
     )  # PCOV compares PHP's own (long) paths with it
-    return [cmd[0], *load, *on, "-d", f"auto_prepend_file={prepend}", *cmd[1:]]
+    return [cmd[0], *load, *on, "-d", f"auto_prepend_file={_ini(prepend)}", *cmd[1:]]
 
 
 def _relative(path: str, root: pathlib.Path) -> str | None:
