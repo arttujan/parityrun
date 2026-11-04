@@ -1,0 +1,25 @@
+# A pull request's title becomes its commit message on main (squash merge), so it must follow Conventional Commits,
+# as the pre-commit hook checks every local commit. The check "pr title" is required in rulesets/main-protection.json.
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  title:
+    name: pr title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}  # through the environment, never into the script itself
+        run: |
+          python -m pip install --quiet conventional-pre-commit==4.5.0
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title.txt"
+          conventional-pre-commit "$RUNNER_TEMP/title.txt"
