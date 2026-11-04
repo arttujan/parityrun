@@ -1,0 +1,41 @@
+# CodeQL: security analysis of the code, on pushes to main, pull requests and once a week. The results are in the
+# repository's Security tab (Code scanning). Keep the repository's CodeQL "default setup" off: this replaces it.
+# Languages: the workflows themselves, Python (parityrun), JavaScript/TypeScript and Rust (parityrun's shims and the
+# examples' ports). PHP, the examples' references, isn't one CodeQL analyses.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "43 4 * * 2"  # Tuesdays: new queries find things in code that hasn't changed
+
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write  # upload the results
+      contents: read
+      actions: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript, python, rust]  # none needs a build
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended  # the default queries and those with lower precision or severity
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
