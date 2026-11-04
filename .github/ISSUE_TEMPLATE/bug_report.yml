@@ -1,0 +1,50 @@
+name: Bug report
+description: parityrun does something wrong, or fails
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        A security problem? Don't report it here: see the repository's Security tab (Report a vulnerability).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to make it happen
+      description: >
+        The smallest project that shows it helps most: parityrun_project.py, impls.json and the scenario (.yaml),
+        with secrets left out.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: parityrun's output, and the service.log or report it points to, if any.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: parityrun version
+      description: "`parityrun --version`"
+      placeholder: parityrun 0.6.1
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and Python
+      placeholder: Windows 11, Python 3.12
+    validations:
+      required: true
+  - type: input
+    id: stack
+    attributes:
+      label: The app's language and framework
+      placeholder: PHP 8.4 (Laravel 11), ported to TypeScript
