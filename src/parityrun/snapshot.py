@@ -327,9 +327,20 @@ def shrink(src: pathlib.Path | bytes, dst: pathlib.Path) -> pathlib.Path:
     return dst
 
 
+class _Filters(Protocol):
+    """The part of scipy.ndimage `ssim` uses, typed here.
+
+    Newer scipy-stubs leave one overload of gaussian_filter partly unknown and older ones don't, so neither a
+    pyright ignore nor its absence passes on every Python: the module is seen through this instead.
+    """
+
+    def gaussian_filter(self, image: NDArray[np.float64], sigma: float, /) -> NDArray[np.float64]:
+        """Return the image blurred with a Gaussian of standard deviation `sigma`."""
+        ...
+
+
 def _blur(m: NDArray[np.float64]) -> NDArray[np.float64]:
-    # scipy-stubs leaves one overload of gaussian_filter partly unknown; this call is the typed float64 one
-    return ndimage.gaussian_filter(m, 1.5)  # pyright: ignore[reportUnknownMemberType]
+    return cast("_Filters", ndimage).gaussian_filter(m, 1.5)
 
 
 def ssim(a: pathlib.Path, b: pathlib.Path) -> float:
