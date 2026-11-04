@@ -1,17 +1,26 @@
-"""End to end, per stack: `parityrun init` in an existing app's folder, then record and check with nothing written by
-hand but one form step. The apps write into their own folders, as legacy apps do; their folders must stay untouched.
+"""End to end, per stack: `parityrun init` in an existing app's folder, then record and check.
+
+Nothing is written by hand but one form step. The apps write into their own folders, as legacy apps do; their folders
+must stay untouched.
 
 Each test skips when its tool is missing: php for the PHP site, node for the Node.js app.
 """
 
+from __future__ import annotations
+
 import json
-import pathlib
 import shutil
+from typing import TYPE_CHECKING
 
 import pytest
 import yaml
 
 from parityrun import cli
+
+if TYPE_CHECKING:
+    import pathlib
+
+    from parityrun.jsontypes import Data
 
 LEGACY_PHP = {
     "index.php": """<?php
@@ -58,46 +67,58 @@ http.createServer((req, res) => {
 }
 
 
-def _app(folder: pathlib.Path, files: dict) -> pathlib.Path:
+def _app(folder: pathlib.Path, files: dict[str, str]) -> pathlib.Path:
     for rel, text in files.items():
         (folder / rel).parent.mkdir(parents=True, exist_ok=True)
-        (folder / rel).write_text(text, encoding="utf-8")
+        _ = (folder / rel).write_text(text, encoding="utf-8")
     return folder
 
 
-def _add_step(app: pathlib.Path, step: dict) -> list[str]:
+def _add_step(app: pathlib.Path, step: Data) -> list[str]:
     path = app / "parityrun" / "scenarios" / "smoke.yaml"
-    scenario = yaml.safe_load(path.read_text(encoding="utf-8"))
+    scenario: Data = yaml.safe_load(path.read_text(encoding="utf-8"))
     scenario["steps"].append(step)
-    path.write_text(yaml.safe_dump(scenario, sort_keys=False), encoding="utf-8")
+    _ = path.write_text(yaml.safe_dump(scenario, sort_keys=False), encoding="utf-8")
     return [s["call"] for s in scenario["steps"]]
 
 
-def _recording(app: pathlib.Path) -> dict:
-    return json.loads((app / "parityrun" / "golden" / "smoke" / "recording.json").read_text(encoding="utf-8"))
+def _recording(app: pathlib.Path) -> Data:
+    recording: Data = json.loads(
+        (app / "parityrun" / "golden" / "smoke" / "recording.json").read_text(encoding="utf-8")
+    )
+    return recording
 
 
-def test_init_sets_up_a_legacy_php_site_that_then_records_and_checks(tmp_path, capsys):
+def test_init_sets_up_a_legacy_php_site_that_then_records_and_checks(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     if not shutil.which("php"):
         pytest.skip("php isn't on PATH")
     app = _app(tmp_path / "site", LEGACY_PHP)
     assert cli.main(["init", str(app)]) == 0
     said = capsys.readouterr().out
-    assert "Found: PHP app" in said and "form tokens captured: _token" in said
+    assert "Found: PHP app" in said
+    assert "form tokens captured: _token" in said
     assert _add_step(app, {"call": "POST /", "form": {"_token": "{{_token}}", "note": "hello"}}) == [
-        "GET /", "GET /about.php", "POST /"]  # init didn't follow the sign-out link
+        "GET /",
+        "GET /about.php",
+        "POST /",
+    ]  # init didn't follow the sign-out link
     project = str(app / "parityrun" / "parityrun_project.py")
     assert cli.main(["--project", project, "record"]) == 0
     recording = _recording(app)
     steps = recording["steps"]
     assert '<input name="_token" type="hidden" value="<_token>">' in steps[0]["html"]
-    assert steps[1]["html"] == ["<p>", "About us", "</p>"] and steps[2]["html"] == ["<p>", "Saved", "</p>"]
+    assert steps[1]["html"] == ["<p>", "About us", "</p>"]
+    assert steps[2]["html"] == ["<p>", "Saved", "</p>"]
     assert recording["files"] == {"app/data/notes.txt": {"text": "hello\n"}}
     assert cli.main(["--project", project, "check"]) == 0
     assert sorted(p.name for p in app.iterdir()) == ["about.php", "index.php", "logout.php", "parityrun"]
 
 
-def test_init_sets_up_a_node_app_that_then_records_and_checks(tmp_path, capsys, monkeypatch):
+def test_init_sets_up_a_node_app_that_then_records_and_checks(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     if not shutil.which("node"):
         pytest.skip("node isn't on PATH")
     app = _app(tmp_path / "hits", NODE_APP)

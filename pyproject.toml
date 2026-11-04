@@ -17,6 +17,7 @@ dependencies = [
   "pillow>=11.0",
   "numpy>=2.0",
   "scipy>=1.13",
+  "typing_extensions>=4.4; python_version < '3.12'",
 ]
 keywords = ["testing", "golden", "snapshot", "conformance", "parity", "rewrite", "llm"]
 classifiers = [
@@ -27,6 +28,14 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+dev = [
+  "pytest>=8.0",
+  "pre-commit>=4.0",
+  "pyright==1.1.414",
+  "ruff==0.17.3",
+  "scipy-stubs",
+  "types-PyYAML",
+]
 
 [project.scripts]
 parityrun = "parityrun.cli:main"
@@ -39,3 +48,45 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 parityrun = ["shims/*"]
+
+# Strictest settings: every ruff rule, pyright strict plus its opt-in rules. Run all of it with `pre-commit run -a`.
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "D203",  # conflicts with D211 (no blank line before a class docstring)
+  "D213",  # conflicts with D212 (the summary on the docstring's first line)
+  "COM812",  # conflicts with the formatter
+  "CPY001",  # LICENSE covers every file; no per-file copyright headers
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The commands' output to the user is printed.
+"src/parityrun/{cli,commands,capture,coverage,init,port}.py" = ["T201"]
+# pytest: assert is how a test checks, expected values are literals, test names say what they test, tests reach
+# into private helpers, and tests/ and examples/ are folders of scripts, not packages.
+"tests/**" = ["S101", "PLR2004", "D1", "SLF001", "INP001"]
+"examples/**" = ["INP001"]
+
+[tool.pyright]
+include = ["src", "tests", "examples"]
+pythonVersion = "3.10"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "strict"
+reportCallInDefaultInitializer = "error"
+reportImplicitOverride = "error"
+reportImportCycles = "error"
+reportMissingSuperCall = "error"
+reportPropertyTypeMismatch = "error"
+reportUninitializedInstanceVariable = "error"
+reportUnnecessaryTypeIgnoreComment = "error"
+reportUnusedCallResult = "error"
+# reportImplicitStringConcatenation stays off: it contradicts ruff's ISC rules, which want implicit concatenation.
+
+# Tests reach into private helpers on purpose (ruff's SLF001 is off there too).
+[[tool.pyright.executionEnvironments]]
+root = "tests"
+reportPrivateUsage = false

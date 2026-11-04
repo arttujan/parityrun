@@ -1,5 +1,7 @@
-"""The cart example: a PHP library (the reference, served by parityrun's library shim) and its ports to JavaScript,
-TypeScript and Rust, each with its own shim. Scenarios are calls (`fn`, `new`), not requests.
+"""The cart example: a PHP library and its ports to JavaScript, TypeScript and Rust.
+
+The reference is served by parityrun's library shim, each port by its own shim. Scenarios are calls (`fn`,
+`new`), not requests.
 
   parityrun --project examples/cart/parityrun_project.py record             (php on PATH)
   parityrun --project examples/cart/parityrun_project.py check --impl js    (node)

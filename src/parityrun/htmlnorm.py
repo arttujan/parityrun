@@ -7,8 +7,14 @@ entities decoded and escaped one way, whitespace runs collapsed, whitespace betw
 """
 
 import re
+import sys
 from html import escape
 from html.parser import HTMLParser
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from typing_extensions import override
 
 SPACE = re.compile(r"[ \t\n\r\f]+")  # HTML's whitespace; a no-break space is text
 
@@ -23,17 +29,16 @@ RAW = {"script", "style"}  # text is code: whitespace collapsed, never escaped
 
 
 def _tag(tag: str, attrs: list[tuple[str, str | None]]) -> str:
-    parts = []
-    for name, value in sorted(attrs, key=lambda a: a[0]):
-        value = value or ""
-        if name == "class":
-            value = _collapse(value)
+    parts: list[str] = []
+    for name, raw in sorted(attrs, key=lambda a: a[0]):
+        value = _collapse(raw or "") if name == "class" else raw or ""
         parts.append(f' {name}="{escape(value)}"')
     return f"<{tag}{''.join(parts)}>"
 
 
 class _Lines(HTMLParser):
     def __init__(self) -> None:
+        """Parse with entities decoded."""
         super().__init__(convert_charrefs=True)
         self.lines: list[str] = []
         self.text: list[str] = []  # the text since the last tag (the parser may hand it over in pieces)
@@ -41,6 +46,7 @@ class _Lines(HTMLParser):
         self.raw = 0
 
     def flush(self) -> None:
+        """Add the text since the last tag as a line."""
         data, self.text = "".join(self.text), []
         if self.keep:
             if data:
@@ -50,7 +56,8 @@ class _Lines(HTMLParser):
         if data:
             self.lines.append(data if self.raw else escape(data, quote=False))
 
-    def handle_starttag(self, tag, attrs):
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.flush()
         self.lines.append(_tag(tag, attrs))
         if tag in KEEP:
@@ -58,11 +65,13 @@ class _Lines(HTMLParser):
         if tag in RAW:
             self.raw += 1
 
-    def handle_startendtag(self, tag, attrs):  # <br/> is <br>
+    @override
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:  # <br/> is <br>
         self.flush()
         self.lines.append(_tag(tag, attrs))
 
-    def handle_endtag(self, tag):
+    @override
+    def handle_endtag(self, tag: str) -> None:
         self.flush()
         if tag in VOID:  # </br> and </input> mean nothing
             return
@@ -72,23 +81,27 @@ class _Lines(HTMLParser):
         if tag in RAW and self.raw:
             self.raw -= 1
 
-    def handle_data(self, data):
+    @override
+    def handle_data(self, data: str) -> None:
         self.text.append(data)
 
-    def handle_decl(self, decl):
+    @override
+    def handle_decl(self, decl: str) -> None:
         self.flush()
         self.lines.append(f"<!{_collapse(decl).lower()}>")
 
-    def handle_pi(self, data):
+    @override
+    def handle_pi(self, data: str) -> None:
         self.flush()
         self.lines.append(f"<?{data}>")
 
-    def handle_comment(self, data):  # dropped; the text around it is one text
-        pass
+    @override
+    def handle_comment(self, data: str) -> None:
+        """Drop the comment; the text around it is one text."""
 
 
 def lines(html: str) -> list[str]:
-    """A page as its normalised lines (see the module docstring)."""
+    """Return a page as its normalised lines (see the module docstring)."""
     parser = _Lines()
     parser.feed(html)
     parser.close()

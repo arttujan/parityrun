@@ -1,9 +1,9 @@
 """The guestbook example: a PHP site (the reference) and its ports to JavaScript, TypeScript and Rust.
 
-  parityrun --project examples/guestbook/parityrun_project.py record             (php on PATH)
-  parityrun --project examples/guestbook/parityrun_project.py check --impl js    (node)
-  ... check --impl ts      (node 23.6 or newer runs TypeScript as is)
-  ... check --impl rust    (first: cargo build --release in examples/guestbook/rust)
+parityrun --project examples/guestbook/parityrun_project.py record             (php on PATH)
+parityrun --project examples/guestbook/parityrun_project.py check --impl js    (node)
+... check --impl ts      (node 23.6 or newer runs TypeScript as is)
+... check --impl rust    (first: cargo build --release in examples/guestbook/rust)
 """
 
 import pathlib
@@ -11,7 +11,8 @@ import pathlib
 from parityrun import Project, RunInfo
 
 
-def env(run: RunInfo) -> dict:
+def env(run: RunInfo) -> dict[str, str]:
+    """Return where the guestbook keeps its data."""
     return {"GUESTBOOK_DATA": str(run.data_dir)}
 
 
