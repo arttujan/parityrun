@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 
-from parityrun import cli, commands, load, runner
+from parityrun import cli, commands, fingerprint, load, runner
 from parityrun import port as porting
 
 if TYPE_CHECKING:
@@ -404,3 +404,20 @@ def test_a_stand_in_tool_ports_the_cart_library_in_two_turns(tmp_path: pathlib.P
     assert "FAIL step 6 fn Cart\\vat result" in second
     assert "value: -1 != 0" in second
     assert cli.main(["--project", str(file), "check", "--impl", "port"]) == 0
+
+
+def test_guard_puts_back_a_fingerprint_a_turn_recorded_again(tmp_path: pathlib.Path) -> None:
+    project = load(_shop(tmp_path))
+    fingerprint.write(project.golden / "a", fingerprint.inputs(project, "a"))
+    guard = porting.Guard(project, tmp_path / "shop", tmp_path / "shop-ts")
+    _ = (project.scenarios / "a.yaml").write_text("steps:\n- call: GET /about\n", encoding="utf-8")
+    _ = (project.golden / "a" / "recording.json").write_text("{}", encoding="utf-8")
+    fingerprint.write(project.golden / "a", fingerprint.inputs(project, "a"))
+    _ = (project.golden / "a" / "response-0.png").write_bytes(b"")
+    assert guard.restore() == [
+        "golden/a/fingerprint.json",
+        "golden/a/recording.json",
+        "golden/a/response-0.png",
+        "scenarios/a.yaml",
+    ]
+    assert fingerprint.changed(project, "a") == []

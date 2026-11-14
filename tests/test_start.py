@@ -152,7 +152,7 @@ def test_a_library_is_told_to_call_more_of_itself(tmp_path: pathlib.Path, capsys
     assert "  0/2 functions, methods and classes called\n" in out
     assert (
         "Next: edit scenarios/*.yaml, then: parityrun record\n      call the rest of the library: 2 not called" in out
-    )  # record: the bare command records only what has no recording, not a scenario changed since
+    )  # record: the bare command also records an edited scenario again, except one recorded by an older parityrun
 
 
 def test_the_bare_command_records_what_isnt_yet_then_shows_the_status(
@@ -197,3 +197,85 @@ def test_in_an_app_with_no_parityrun_yet_the_bare_command_sets_it_up_records_and
     out = capsys.readouterr().out
     assert "setting it up" not in out
     assert "Recording first" not in out
+
+
+def _edit(file: pathlib.Path) -> None:
+    """Add a step to the scenario a."""
+    path = file.parent / "scenarios" / "a.yaml"
+    _ = path.write_bytes(path.read_bytes() + b"- call: GET /about\n")
+
+
+def test_the_bare_command_records_an_edited_scenario_again(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _project(tmp_path, recorded=False)
+    golden = file.parent / "golden" / "a"
+    assert cli.main(["--project", str(file)]) == 0
+    assert (golden / "fingerprint.json").exists()
+    assert "Recording" in capsys.readouterr().out
+    assert cli.main(["--project", str(file)]) == 0
+    assert "Recording" not in capsys.readouterr().out
+    _edit(file)
+    assert cli.main(["--project", str(file)]) == 0
+    out = capsys.readouterr().out
+    assert "Recording again, changed since the last recording: a (scenarios/a.yaml)" in out
+    assert "a: recorded 2 steps" in out
+    assert len(json.loads((golden / "recording.json").read_text(encoding="utf-8"))["steps"]) == 2
+    _ = (file.parent / "scenarios" / "a.yaml").write_bytes(b"steps:\r\n- call: GET /\r\n- call: GET /about\r\n")
+    assert cli.main(["--project", str(file)]) == 0
+    assert "Recording" not in capsys.readouterr().out
+
+
+def test_an_older_recording_is_kept_when_its_scenario_changes_and_noted_once(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _project(tmp_path)
+    golden = file.parent / "golden" / "a"
+    before = (golden / "recording.json").read_bytes()
+    _edit(file)
+    assert cli.main(["--project", str(file)]) == 0
+    out = capsys.readouterr().out
+    assert "Recording first" not in out
+    assert "Recording again" not in out
+    assert (golden / "recording.json").read_bytes() == before
+    assert not (golden / "fingerprint.json").exists()
+    assert out.count("recorded by an older parityrun") == 1
+    assert cli.main(["--project", str(file)]) == 0
+    assert "recorded by an older parityrun" not in capsys.readouterr().out
+    assert (file.parent / "out" / ".older-recordings-noted").exists()
+
+
+def test_check_records_an_edited_scenario_first_then_checks_against_it(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _project(tmp_path, recorded=False)
+    assert cli.main(["--project", str(file), "record"]) == 0
+    _edit(file)
+    _ = capsys.readouterr()
+    assert cli.main(["--project", str(file), "check"]) == 0
+    out = capsys.readouterr().out
+    assert "Recording again" in out
+    assert "py: parity 100.0 %" in out
+    report = json.loads((file.parent / "out" / "report-py.json").read_text(encoding="utf-8"))
+    assert any(c["name"].startswith("step 1 GET /about") for c in report["a"])
+
+
+def test_port_records_an_edited_scenario_again_first(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _project(tmp_path, recorded=False)
+    assert cli.main(["--project", str(file), "record"]) == 0
+    _edit(file)
+    _ = capsys.readouterr()
+    assert cli.main(["--project", str(file), "port", "--to", "rs", "--setup-only"]) == 0
+    assert "Recording again, changed since the last recording: a" in capsys.readouterr().out
+
+
+def test_next_is_record_while_an_edited_scenario_isnt_recorded_again(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file = _project(tmp_path, recorded=False)
+    assert cli.main(["--project", str(file), "record"]) == 0
+    _edit(file)
+    out = _status(file, capsys)
+    assert "Next: parityrun record\n      a: the two runs differed (see above); make them alike" in out
