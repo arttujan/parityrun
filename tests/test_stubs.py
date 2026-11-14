@@ -139,7 +139,7 @@ def test_the_llm_paths_the_stub_knows_and_the_ones_it_doesnt() -> None:
         assert missing == {
             "type": "result",
             "is_error": True,
-            "result": "conformance stub has no LLM reply queued for this call",
+            "result": "conformance stub: no LLM reply queued for this call",
         }
         stub.queue([{"$http": 429, "message": "slow down"}, "plain text"])
         busy = httpx.post(f"{stub.url}/v1/chat/completions", json={"model": "m", "stream": True})
