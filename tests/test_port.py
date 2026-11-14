@@ -281,7 +281,7 @@ def _needs(language: str) -> None:
 
 
 @pytest.mark.parametrize("language", ["javascript", "typescript", "rust"])
-def test_an_ai_tool_ports_the_guestbook_in_two_turns(tmp_path: pathlib.Path, language: str) -> None:
+def test_a_stand_in_tool_ports_the_guestbook_in_two_turns(tmp_path: pathlib.Path, language: str) -> None:
     """Turn 1 ports it with a reworded message, so `validation` fails; turn 2 is told exactly that, and fixes it."""
     _needs(language)
     root = tmp_path / "guestbook"
@@ -369,7 +369,7 @@ def test_a_librarys_port_starts_as_an_empty_library_and_parityruns_shim(
 
 
 @pytest.mark.parametrize("language", ["javascript", "typescript", "rust"])
-def test_an_ai_tool_ports_the_cart_library_in_two_turns(tmp_path: pathlib.Path, language: str) -> None:
+def test_a_stand_in_tool_ports_the_cart_library_in_two_turns(tmp_path: pathlib.Path, language: str) -> None:
     """Turn 1 rounds like the target language does, so one call of `functions` fails; turn 2 is told, and fixes it."""
     _needs(language)
     file = _cart(tmp_path)

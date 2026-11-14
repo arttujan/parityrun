@@ -1,0 +1,22 @@
+name: Idea
+description: Something parityrun should do, or do better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you are trying to do
+      description: The app, the port or the check you have in mind, and where parityrun falls short today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: How you'd like it to work. Existing projects must keep checking as before, so say if it changes that.
+    validations:
+      required: true
+  - type: textarea
+    id: else
+    attributes:
+      label: What you do instead now

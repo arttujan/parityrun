@@ -30,6 +30,7 @@ classifiers = [
 test = ["pytest>=8.0"]
 dev = [
   "pytest>=8.0",
+  "pytest-cov>=7.0",
   "pre-commit>=4.0",
   "pyright==1.1.414",
   "ruff==0.17.3",
@@ -85,6 +86,17 @@ reportUninitializedInstanceVariable = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 reportUnusedCallResult = "error"
 # reportImplicitStringConcatenation stays off: it contradicts ruff's ISC rules, which want implicit concatenation.
+
+# `pytest --cov`: every line and branch of parityrun, also in the subprocesses the tests start (the stub, the
+# fake claude, the CLI run as a command).
+[tool.coverage.run]
+source = ["parityrun"]
+branch = true
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 # Tests reach into private helpers on purpose (ruff's SLF001 is off there too).
 [[tool.pyright.executionEnvironments]]

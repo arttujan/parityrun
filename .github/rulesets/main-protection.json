@@ -18,6 +18,7 @@
         "do_not_enforce_on_create": false,
         "required_status_checks": [
           { "context": "lint", "integration_id": 15368 },
+          { "context": "pr title", "integration_id": 15368 },
           { "context": "test (ubuntu-latest, Python 3.10)", "integration_id": 15368 },
           { "context": "test (ubuntu-latest, Python 3.13)", "integration_id": 15368 },
           { "context": "test (windows-latest, Python 3.13)", "integration_id": 15368 }
