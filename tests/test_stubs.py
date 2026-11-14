@@ -1,5 +1,7 @@
-"""The stub's every path: multipart bodies taken apart, how each kind of outside-service body is recorded, pages and
-pictures a project handler answers, the model list and the paths it has no answer for.
+"""Every path of the stub.
+
+Multipart bodies taken apart, how each kind of outside-service body is recorded, pages and pictures a project
+handler answers, the model list and the paths it has no answer for.
 """
 
 from __future__ import annotations
