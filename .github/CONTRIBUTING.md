@@ -41,7 +41,12 @@ pytest
 
 The end-to-end tests run real apps, so they need their tools on PATH, and skip (saying why) without them: `php`
 (8.2 or newer; with PCOV or Xdebug for the coverage tests), `node` (23.6 or newer, for TypeScript) and `cargo`. CI
-has them all. The MySQL, PostgreSQL and real AI tool tests run only when asked; their files say how.
+has them all. The MySQL and PostgreSQL tests run only when asked; their files say how.
+
+tests/test_e2e_agent.py has an AI tool really port the examples' PHP site and library to JavaScript, TypeScript and
+Rust. It runs whenever Claude Code (`claude`) is on PATH, takes about half an hour and uses your Claude account;
+`PARITYRUN_TEST_AGENT=off` skips it. CI doesn't run it (there's no AI account there); the maintainer runs it before
+every release.
 
 ## What a change has to keep
 

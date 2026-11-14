@@ -1,6 +1,7 @@
 # Lint (ruff, pyright: the same checks as the pre-commit hook) and the tests, on every push to main and pull request.
 # publish.yml runs this first: a release tag is published only when everything here passes.
-# The end-to-end tests need php (with PCOV), node 23.6+ and cargo; all three are set up, so none of them skip.
+# The end-to-end tests need php (with PCOV), node 23.6+ and cargo; all three are set up, so none of them skip. The
+# real AI tool tests (tests/test_e2e_agent.py) skip here: no `claude`, and no AI account. They run locally.
 name: CI
 
 on:
