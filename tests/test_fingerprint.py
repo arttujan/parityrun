@@ -98,6 +98,10 @@ def test_a_recording_without_a_fingerprint_is_never_changed(tmp_path: pathlib.Pa
     assert fingerprint.changed(project, "a") is None
     _ = (folder / fingerprint.FILE).write_bytes(b"not json")
     assert fingerprint.changed(project, "a") is None
+    _ = (folder / fingerprint.FILE).write_bytes(b"[]")
+    assert fingerprint.changed(project, "a") is None  # not a dict
+    _ = (folder / fingerprint.FILE).write_bytes(json.dumps({"format": 1, "inputs": []}).encode("utf-8"))
+    assert fingerprint.changed(project, "a") is None
 
 
 def test_the_fingerprint_file_is_saved_in_a_stable_form(tmp_path: pathlib.Path) -> None:
@@ -109,3 +113,23 @@ def test_the_fingerprint_file_is_saved_in_a_stable_form(tmp_path: pathlib.Path) 
     _recorded(project)
     _scenario(project, "steps: [unclosed\n")
     assert fingerprint.changed(project, "a") == []
+
+
+def test_an_unreadable_scenario_is_unknown_not_a_crash(tmp_path: pathlib.Path) -> None:
+    project = Project(root=tmp_path)
+    _scenario(project, "steps:\n- call: GET /\n")
+    _recorded(project)
+    (project.scenarios / "a.yaml").unlink()
+    assert fingerprint.changed(project, "a") == []
+    _ = (project.scenarios / "a.yaml").write_bytes(b"steps:\n- call: GET /\xe9\n")
+    assert fingerprint.changed(project, "a") == []
+
+
+def test_mixed_type_keys_fall_back_to_the_text(tmp_path: pathlib.Path) -> None:
+    project = Project(root=tmp_path)
+    text = "steps:\n- call: GET /\n  data:\n    1: x\n    a: y\n"
+    _scenario(project, text)
+    want = {"scenarios/a.yaml": _sha(text.encode("utf-8"))}
+    assert fingerprint.inputs(project, "a") == want
+    _ = (project.scenarios / "a.yaml").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    assert fingerprint.inputs(project, "a") == want

@@ -90,7 +90,10 @@ def write(folder: pathlib.Path, found: dict[str, str]) -> None:
 
 
 def changed(project: Project, name: str) -> list[str] | None:
-    """Return the inputs that differ from the recording's fingerprint; None when there is nothing to compare."""
+    """Return the inputs that differ from the recording's fingerprint; None when there is nothing to compare.
+
+    An empty list means unchanged; so does a scenario that can't be read now (the run reports that itself).
+    """
     folder = project.golden / name
     if not (folder / "recording.json").exists() or not (folder / FILE).exists():
         return None
@@ -107,6 +110,6 @@ def changed(project: Project, name: str) -> list[str] | None:
     before = cast("dict[str, object]", stored)
     try:
         now = inputs(project, name)
-    except (OSError, yaml.YAMLError):
+    except (OSError, ValueError, yaml.YAMLError):  # unreadable, not UTF-8 or not YAML
         return []  # can't tell; the run reports the error itself
     return sorted(k for k in set(before) | set(now) if before.get(k) != now.get(k))
