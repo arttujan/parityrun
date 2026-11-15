@@ -12,7 +12,9 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from . import api, runner
+import yaml
+
+from . import api, fingerprint, runner
 from . import coverage as code_coverage
 
 if TYPE_CHECKING:
@@ -36,6 +38,10 @@ def record(project: Project, names: list[str], *, force: bool) -> int:
         return 1
     failed = 0
     for name in names:
+        try:
+            seen = fingerprint.inputs(project, name)  # before the runs: what was actually recorded
+        except (OSError, ValueError, yaml.YAMLError):
+            seen = None  # the runs fail the same way and report it
         dirs = [pathlib.Path(tempfile.mkdtemp(prefix=f"rec-{name}-")) for _ in range(2)]
         runs = [runner.run(impl, name, d) for d in dirs]
         unstable = [c for c in runner.checks(runs[0], runs[1], dirs[0], dirs[1], project) if not c["ok"]]
@@ -49,6 +55,8 @@ def record(project: Project, names: list[str], *, force: bool) -> int:
         shutil.rmtree(target, ignore_errors=True)
         _ = shutil.copytree(dirs[0], target)
         _ = (target / "recording.json").write_text(dump(runs[0]), encoding="utf-8", newline="\n")
+        if seen is not None:
+            fingerprint.write(target, seen)
         print(
             f"{name}: recorded {len(runs[0]['steps'])} steps, {len(runs[0]['db'].get('rows', {}))} tables, "
             f"{len(runs[0]['files'])} files"
@@ -128,6 +136,25 @@ def check(project: Project, impl_name: str, names: list[str]) -> int:
 def unrecorded(project: Project) -> list[str]:
     """Return the scenarios that have no recording yet."""
     return [n for n in runner.all_scenarios(project) if not (project.golden / n / "recording.json").exists()]
+
+
+def changed(project: Project) -> dict[str, list[str]]:
+    """Return, per scenario, the inputs that changed since it was recorded (only the scenarios that changed)."""
+    found: dict[str, list[str]] = {}
+    for n in sorted(runner.all_scenarios(project)):
+        diff = fingerprint.changed(project, n)
+        if diff:
+            found[n] = diff
+    return found
+
+
+def legacy(project: Project) -> list[str]:
+    """Return the scenarios recorded without a fingerprint (by an older parityrun): their changes aren't noticed."""
+    return [
+        n
+        for n in runner.all_scenarios(project)
+        if (project.golden / n / "recording.json").exists() and fingerprint.changed(project, n) is None
+    ]
 
 
 def last_parity(project: Project, impl: str) -> tuple[int, int] | None:

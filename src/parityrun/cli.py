@@ -18,7 +18,8 @@ It also lists the endpoints the scenarios don't use yet.
 
 FILE (default $PARITYRUN_PROJECT, else parityrun_project.py, else parityrun/parityrun_project.py) defines
 PROJECT = parityrun.Project(...). With none of them, every command but init sets parityrun up first (init); the
-bare command, check and port record the scenarios that have no recording yet before they go on.
+bare command, check and port record the scenarios that have no recording yet, or whose scenario changed since it was
+recorded, before they go on.
 """
 
 from __future__ import annotations
@@ -31,10 +32,10 @@ import shutil
 import sys
 from typing import TYPE_CHECKING, cast
 
-from . import __version__, api, routes, runner
+from . import __version__, api, fingerprint, routes, runner
 from . import coverage as code_coverage
 from .capture import capture, covered_routes, write_endpoints
-from .commands import check, coverage, covered, last_parity, record, templates, unrecorded
+from .commands import changed, check, coverage, covered, last_parity, legacy, record, templates, unrecorded
 from .init import init
 from .port import Options, port
 from .project import Project, load
@@ -60,7 +61,7 @@ def language(text: str) -> str:
 
 def _next_step(project: Project, names: list[str], to_visit: list[str], ports: list[str]) -> tuple[str, str] | None:
     """Return the command to run next and why, before every port is at parity; None when they all are."""
-    missing = unrecorded(project)
+    missing = sorted({*unrecorded(project), *changed(project)})
     parity = {n: last_parity(project, n) for n in ports}
     if missing:
         return "parityrun record", f"{', '.join(missing)}: the two runs differed (see above); make them alike"
@@ -105,6 +106,21 @@ def _visited(project: Project) -> tuple[str, list[str]]:
     return visited, to_visit
 
 
+def _older_recordings_note(project: Project) -> None:
+    """Say once that recordings made by an older parityrun don't notice a change to their scenario."""
+    older = legacy(project)
+    if not older or (project.out / fingerprint.NOTED).exists():
+        return
+    many = len(older) != 1
+    print(
+        f"  note: {', '.join(older)} {'were' if many else 'was'} recorded by an older parityrun, so a change to "
+        f"{'their scenarios' if many else 'its scenario'} isn't noticed.\n"
+        f"        Record {'them' if many else 'it'} once more to have changes noticed from then on: parityrun record"
+    )
+    project.out.mkdir(parents=True, exist_ok=True)
+    (project.out / fingerprint.NOTED).touch()
+
+
 def status(project: Project) -> int:
     """Show where the project stands, then the one command to run next.
 
@@ -132,6 +148,7 @@ def status(project: Project) -> int:
             f"  {n}: "
             + (f"parity {100 * got[0] / got[1]:.1f} % at its last check" if got and got[1] else "not checked yet")
         )
+    _older_recordings_note(project)
     step = _next_step(project, names, to_visit, ports)
     if step is None:
         proof = " and ".join(x for x in (visited, lines) if x)
@@ -276,10 +293,15 @@ def _port(project: Project, args: argparse.Namespace, source: pathlib.Path | Non
 def _run(project: Project, args: argparse.Namespace, source: pathlib.Path | None) -> int:
     """Run the command `args` names on the project."""
     failed = 0
-    if args.cmd in (None, "check", "port") and unrecorded(project):
-        missing = unrecorded(project)
-        print(f"Recording first: {', '.join(missing)}")
-        failed = record(project, missing, force=False)
+    missing = unrecorded(project) if args.cmd in (None, "check", "port") else []
+    edited = changed(project) if args.cmd in (None, "check", "port") else {}
+    if missing or edited:
+        if missing:
+            print(f"Recording first: {', '.join(missing)}")
+        if edited:
+            again = ", ".join(f"{n} ({', '.join(what)})" for n, what in edited.items())
+            print(f"Recording again, changed since the last recording: {again}")
+        failed = record(project, [n for n in runner.all_scenarios(project) if n in missing or n in edited], force=False)
         if failed and args.cmd:
             return 1
         print()
